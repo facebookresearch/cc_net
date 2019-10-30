@@ -300,7 +300,7 @@ def unminify(
         "unminify",
         output_dir / "logs",
         execution,
-        timeout_hour=2,
+        timeout_hour=4,
         cpus=1,
         task_parallelism=parallelism,
         mem_gb=8,

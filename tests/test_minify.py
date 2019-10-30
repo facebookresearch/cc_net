@@ -51,9 +51,9 @@ def test_minify():
 @pytest.fixture
 def http_from_disk(monkeypatch):
     def read_sample_file(url: str, n_retry: int = 3) -> bytes:
-        expected_url = process_wet_file.WET_URL_ROOT + "/crawl-data/sample.warc.wet"
+        expected_url = process_wet_file.WET_URL_ROOT + "/crawl-data/sample.warc.txt"
         assert expected_url == url
-        file = Path(__file__).parent / "data" / "sample.warc.wet"
+        file = Path(__file__).parent / "data" / "sample.warc.txt"
         return file.read_bytes()
 
     monkeypatch.setattr(cc_net.jsonql, "request_get_content", read_sample_file)
@@ -72,7 +72,7 @@ Fiction is obliged to stick to possibilities. Truth isn't."""
         "source_domain": "sample_english.com",
         "title": "Famous Mark Twain Quotes",
         "raw_content": quotes,
-        "cc_segment": "crawl-data/sample.warc.wet",
+        "cc_segment": "crawl-data/sample.warc.txt",
         "nlines": 3,
         "length": len(quotes),
         "original_nlines": 4,
@@ -95,7 +95,7 @@ def test_unminify_hit_mem_cache(http_from_disk):
         {
             "url": "http://sample_english.com",
             "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
-            "cc_segment": "crawl-data/sample.warc.wet",
+            "cc_segment": "crawl-data/sample.warc.txt",
             "hashes": encode_as_hashes(
                 ["Facts are stubborn things, but statistics are more pliable."]
             ),
@@ -103,7 +103,7 @@ def test_unminify_hit_mem_cache(http_from_disk):
         {
             "url": "http://sample_chinese.com",
             "digest": "sha1:Y4E6URVYGIAFNVRTPZ5S3J64RTZTP6HJ",
-            "cc_segment": "crawl-data/sample.warc.wet",
+            "cc_segment": "crawl-data/sample.warc.txt",
             "hashes": encode_as_hashes(["事實是固執的東西，但統計數字卻比較柔和。"]),
         },
     ]

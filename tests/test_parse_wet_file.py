@@ -11,7 +11,7 @@ from cc_net import process_wet_file
 
 
 def test_parsing():
-    sample = Path(__file__).parent / "data" / "sample.warc.wet"
+    sample = Path(__file__).parent / "data" / "sample.warc.txt"
     with open(sample) as f:
         documents = list(process_wet_file.parse_warc_file(f))
 
