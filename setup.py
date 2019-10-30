@@ -45,4 +45,5 @@ setup(
         # Full version is at https://github.com/atom-moyer/getpy
         "getpy": ["getpy @ git+https://github.com/gwenzek/getpy.git@v0.9.9-subset"],
     },
+    package_data={"cc_net": ["data/*"]},
 )

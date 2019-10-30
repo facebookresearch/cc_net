@@ -32,7 +32,7 @@ from cc_net import split_by_lang
 from cc_net.execution import Executor
 
 # Constant
-CUTOFF_CSV = Path(__file__).parent.parent / "config/cutoff.csv"
+CUTOFF_CSV = Path(__file__).parent / "data" / "cutoff.csv"
 
 
 class Config(NamedTuple):
@@ -439,7 +439,7 @@ def _validate_test(conf: Config, generate: bool = False):
 
     print("*** Stats ***")
     print(json.dumps(stats, indent=2))
-    stats_file = Path(__file__).parent.parent / "config" / f"test_stats.json"
+    stats_file = Path(__file__).parent / "data" / "test_stats.json"
     if generate:
         print("Saving stats to", stats_file)
         stats_file.write_text(json.dumps(stats, indent=2))
