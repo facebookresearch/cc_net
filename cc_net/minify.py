@@ -16,6 +16,7 @@ import numpy as np
 
 from cc_net import jsonql
 from cc_net.execution import get_executor
+from cc_net.jsonql import mem_footprint_gb
 from cc_net.process_wet_file import WET_URL_ROOT, parse_warc_file
 
 HASH_SIZE = 4
@@ -144,6 +145,7 @@ class Unminifier(jsonql.Transformer):
         file = self.cache_dir / segment.split("/")[-1]
         if not file.exists():
             self.retrieved_segments += 1
+            # TODO: make this write thread-safe.
             file.write_bytes(jsonql.request_get_content(url))
 
         return jsonql.smart_open(file)
@@ -168,6 +170,7 @@ class Unminifier(jsonql.Transformer):
                     continue
                 self.mem_cache[k] = d
 
+        self.log_summary()
         return self.mem_cache.pop(key, None)
 
     def do(self, doc: dict) -> Optional[dict]:
@@ -178,7 +181,9 @@ class Unminifier(jsonql.Transformer):
         if not full_doc:
             self.missed_doc += 1
             return None
+        return self.clean(doc, full_doc)
 
+    def clean(self, doc: dict, full_doc: dict) -> Optional[dict]:
         hashes = set(_b2i(h) for h in decode_hashes(doc.pop("hashes")))
         content = full_doc["raw_content"]
         cleaned = []
@@ -201,13 +206,15 @@ class Unminifier(jsonql.Transformer):
         doc["length"] = len(doc["raw_content"])
         doc["nlines"] = len(cleaned)
         doc["source_domain"] = urlparse(doc["url"]).netloc
-
         return doc
 
     def summary(self) -> List[str]:
         summ = super().summary()
+        mem = mem_footprint_gb()
+        len_cache = len(self.mem_cache)
         summ.append(
-            f"Read {self.read_doc:_}, missed {self.missed_doc} docs, {self.missed_par} par"
+            f"Read {self.read_doc:_}, missed {self.missed_doc} docs, {self.missed_par} par."
+            f" Stocking {len_cache:_} doc in {mem:.1}Gb."
         )
         return summ
 
@@ -264,6 +271,11 @@ def unminify(
     cache_dir: Path = None,
 ):
     """Minify all the files in the given folder."""
+    if len(files) == 1 and Path(files[0]).is_dir():
+        folder = Path(files[0])
+        files = [str(f) for f in sorted(folder.glob("*.json.gz"))]
+        print(f"Found {len(files)} files under {folder}/*.json.gz")
+
     assert len(files) > 0, "No files given."
     output_dir.mkdir(exist_ok=True)
 
@@ -277,6 +289,7 @@ def unminify(
         timeout_hour=2,
         cpus=1,
         task_parallelism=parallelism,
+        mem_gb=8,
     )
     ex(unminify_file, files, outputs, itertools.repeat(cache_dir))
 
@@ -307,9 +320,13 @@ def reproduce(
     parallelism: int = -1,
     cache_dir: Path = None,
 ):
-    """Reproduce paper results by reconstructing the corpus from CC data.
+    """Reproduce paper results from official CC snapshot and precomputed results.
 
+    - dump: CC dump id
     - bucket: can be one of ("head", "middle", "tail", "all")
+    - ouput_dir: output directory
+    - execution: how to parallelize ("mp", "debug", "slurm", ...)
+    - cache_dir: where the CC .wet files will be downloaded.
     """
     output_dir.mkdir(exist_ok=True, parents=True)
     urls = select_urls(dump, language, bucket)

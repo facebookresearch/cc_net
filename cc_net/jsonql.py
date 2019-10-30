@@ -21,7 +21,9 @@ import json
 import logging
 import multiprocessing
 import os
+import platform
 import re
+import resource
 import sys
 import time
 import warnings
@@ -53,6 +55,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M",
 )
 
+RUSAGE_UNIT = 1000 if platform.system() == "Linux" else 1
 NEWLINE = " N3WL1N3 "
 
 FilterFn = Callable[[dict], bool]
@@ -247,8 +250,7 @@ class Transformer:
         # Log every 5 min unless specified other wise.
         self._log_freq = int(os.environ.get("JSONQL_LOG_FREQ", 5 * 60))
         self.__cls = type(self)
-        self.__logger = logging.getLogger(self.__cls.__name__)
-        self.__num_initialized = 0
+        self._logger = logging.getLogger(self.__cls.__name__)
 
     def __call__(self, x):
         assert self.ready, f"{self} is not ready."
@@ -273,7 +275,7 @@ class Transformer:
         return f"Processed {self.processed:_} documents in {h:.2}h ({s:5.1f} doc/s)."
 
     def log(self, message):
-        self.__logger.info(message)
+        self._logger.info(message)
 
     def log_summary(self):
         if not self.ready:
@@ -1317,6 +1319,11 @@ def grouper(iterable, n):
             group = []
     if group:
         yield group
+
+
+def mem_footprint_gb(pid=None):
+    max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return max_rss / 1_000_000_000 * RUSAGE_UNIT
 
 
 if __name__ == "__main__":

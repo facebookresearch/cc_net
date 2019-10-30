@@ -17,6 +17,7 @@ import json
 import shutil
 import time
 import warnings
+from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
@@ -475,39 +476,47 @@ def _validate_test(conf: Config, generate: int = False):
             )
 
 
-def main() -> None:
-    parser = func_argparse.func_argparser(Config)
-    parser.add_argument("--config", type=str, default="base")
+def get_main_parser(subparsers) -> ArgumentParser:
+    p: Optional[ArgumentParser] = None
+    if subparsers is not None:
+        documentation = Config.__doc__.strip().split("\n")[0]
+        p = subparsers.add_parser("mine", help=documentation)
+        assert p is not None
+        p.set_defaults(__command=main)
+    p = func_argparse.func_argparser(Config, p)
+    p.add_argument("--config", type=str, default="base")
 
     # Override defaults value to None, so we know what was set by the user.
     # Note that it will keep the original default values in the help message.
-    parser.set_defaults(**{f: None for f in Config._fields})
+    p.set_defaults(**{f: None for f in Config._fields})
+    return p
 
-    args = vars(parser.parse_args())
-    # Use the given config / base as default value.
-    config_name = args.pop("config")
-    config = Config()
-    if config_name in PREDEF_CONFIGS:
-        config = PREDEF_CONFIGS[config_name]
-    elif Path(config_name).exists():
-        config = Config.from_json(Path(config_name))
+
+def main(config: str = "base", **config_as_dict: Any) -> None:
+    # Use the given 'config' as default value.
+    config_base = config
+    if config_base in PREDEF_CONFIGS:
+        conf = PREDEF_CONFIGS[config_base]
+    elif Path(config_base).exists():
+        conf = Config.from_json(Path(config_base))
     else:
         raise ValueError(
-            f"Invalid value {config_name} for --config. "
+            f"Invalid value {config_base} for --config. "
             f"Choose from ({', '.join(PREDEF_CONFIGS)}) or give an existing .json file."
         )
-    config = config._replace(**{k: v for (k, v) in args.items() if v is not None})
-    print("Will run mine.py with the following config:", config)
+    conf = conf._replace(**{k: v for (k, v) in config_as_dict.items() if v is not None})
+    print("Will run mine.py with the following config:", conf)
 
     # Only regroup if we split the shards.
-    if config.will_split:
-        regroup(config)
+    if conf.will_split:
+        regroup(conf)
     else:
-        mine(config)
+        mine(conf)
 
     if config == PREDEF_CONFIGS["test"]:
-        _validate_test(config)
+        _validate_test(conf)
 
 
 if __name__ == "__main__":
-    main()
+    parser = get_main_parser(None)
+    main(**vars(parser.parse_args()))

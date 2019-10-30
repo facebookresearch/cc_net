@@ -120,7 +120,10 @@ def parse_warc_file(lines: Iterable[str], min_len: int = 1) -> Iterator[dict]:
             continue
         n_ok += 1
         yield doc
-    logger.info(f"Kept {n_ok:_d} documents over {n_doc:_d} ({n_ok / n_doc:.1%}).")
+    if n_doc > 0:
+        logger.info(f"Kept {n_ok:_d} documents over {n_doc:_d} ({n_ok / n_doc:.1%}).")
+    else:
+        logger.info(f"Found no documents")
 
 
 def dl(

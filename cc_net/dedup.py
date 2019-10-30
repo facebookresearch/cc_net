@@ -15,8 +15,6 @@ import hashlib
 import logging
 import multiprocessing
 import os
-import platform
-import resource
 import tempfile
 import time
 from pathlib import Path
@@ -26,11 +24,11 @@ import numpy as np
 
 from cc_net import jsonql
 from cc_net.flat_hash_set import HASH_TYPE, AbstractDedupHashSet, FlatHashSet
+from cc_net.jsonql import mem_footprint_gb
 from cc_net.text_normalizer import normalize_for_dedup
 
 BYTE_ORDER = "little"
 HASH_SIZE = HASH_TYPE(0).nbytes
-RUSAGE_UNIT = 1000 if platform.system() == "Linux" else 1
 DISABLE_MULTI_PROCESSING = False
 
 FilesOrDir = Union[List[Path], Path]
@@ -58,11 +56,6 @@ def _b2i(b: bytes) -> int:
 def str_hash(s: str) -> int:
     h = hashlib.sha1(bytes(s, encoding="utf-8"))
     return _b2i(h.digest())
-
-
-def mem_footprint_gb(pid=None):
-    max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return max_rss / 1_000_000_000 * RUSAGE_UNIT
 
 
 log = logging.getLogger(__name__).info

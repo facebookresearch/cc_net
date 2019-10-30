@@ -1,10 +1,8 @@
-# ccall
+# cc_net
 
-Tools to download and clean Common Crawl.
+Tools to download and clean Common Crawl as introduced in our paper [CCNet]()
 
-[Paper]()
-
-[![CircleCI](https://circleci.com/gh/fairinternal/ccall.svg?style=svg&circle-token=e6b455dd56e9109a263729dd080c1fa6d1df3506)](https://circleci.com/gh/fairinternal/ccall)
+[![CircleCI](https://circleci.com/gh/facebookresearch/cc_net.svg?style=svg)](https://circleci.com/gh/facebookresearch/cc_net)
 
 
 ## Installation
@@ -26,29 +24,31 @@ We only tried this on Linux but installation should be possible on MacOS too.
 
 The `Makefile` is used to train Sentence Piece and LM on Wikipedia data.
 
-* `make help` show help
+* `make help` shows help
 * `make lang=de lm` trains a Sentence Piece and a LM on German Wikipedia
-* `make all_lm` trains the same model than in the paper.
+* `make all_lm` trains the same model than in the paper
 * `make lang=de dl_lm` downloads the LM trained for the paper
-* `make dl_all_lm` downloads all of them.
+* `make dl_all_lm` downloads all of them
 
 ## Pipeline overview
 
-- `hashes` Downloads one Common-Crawl snapshot, and compute hashes for each paragraph
-- `mine` Remove duplicates, detects language, run the LM and split by lang/perplexity bucket.
-- `regroup` Regroup the files created by `mine` in chunks of 4Gb.
+The full mining pipeline is divided in 3 steps:
+
+- `hashes` downloads one Common-Crawl snapshot, and compute hashes for each paragraph
+- `mine` removes duplicates, detects language, run the LM and split by lang/perplexity buckets
+- `regroup` regroup the files created by `mine` in chunks of 4Gb
 
 Each step needs the previous step to be over before starting.
-You can launch the full pipeline using `python mine.py`.
+You can launch the full pipeline using `python -m cc_net mine`.
 
-* `python mine.py --help` Show help
-* `python mine.py --dump_id 2019-13` Download a specific snapshot
-* `python mine.py -l my -l gu` 
-Restrict to specific languages
-* `python mine.py --lm_dir my_lms/` Use custom LMs
-* `python mine.py --lang_threshold 0.3` Set a specific field in `mine.Config`
-* `python mine.py --config test` Run on a tiny subset of a snapshot
-* `python mine.py --config config/my_config.json` Use configuration from the given config file
+* `python -m cc_net mine --help` shows help
+* `python -m cc_net mine --dump_id 2019-13` downloads a specific snapshot
+* `python -m cc_net mine -l my -l gu` 
+restricts to specific languages
+* `python -m cc_net mine --lm_dir my_lms/` uses custom LMs
+* `python -m cc_net mine --lang_threshold 0.3` set a specific field in `mine.Config`
+* `python -m cc_net mine --config test` runs on a tiny subset of a snapshot
+* `python -m cc_net mine --config config/my_config.json` uses configuration from the given config file
 
 ## Reproducing our work
 
@@ -56,14 +56,14 @@ Given the CPU required to run the full pipeline on such a big corpus we share a 
 You can reconstruct the corpus used in the paper by using:
 
 ```sh
-python minify.py expand --dump_id 2019-09 
+python -m cc_net reproduce --dump_id 2019-09
 ```
 
 ## Adapting to your infrastructure
 
 Given the computation cost of running the full pipeline we distributes the computation on a SLURM cluster using the private submitit package.
-
-It is possible to run the tasks in-process by passing `--partition debug` to most commands.
+`execution.py` also contains code to run the code using `multiprocessing` library by passing `--execution mp` to commands.
+To run the tasks in-process use `--execution debug`.
 
 
 ## Output format
@@ -100,10 +100,8 @@ __Sample JSON object__:
   "original_nlines": 7,
   "original_length": 754,
   "language": "en",
-  "language_score": 0.9914408922195435,
-  "perplexity": 255.11130137170747,
-  "bucket": "head",
-  "cc_segment": "crawl-data/CC-MAIN-2017-34/segments/1502886102757.45/wet/CC-MAIN-20170816231829-20170817011829-00315.warc.wet.gz"
+  "language_score": 0.99,
+  "perplexity": 255.11,
 }
 ```
 
@@ -112,3 +110,8 @@ You can peak at those files using UNIX tools `zcat` and [`jq`](https://stedolan.
 
 `jq` can do some complicated filtering.
 `jsonql.py` provides a Python API with multiprocess support to do more complicated operations like LM scoring of the document.
+
+## License
+
+By contributing to `cc_net`, you agree that your contributions will be licensed
+under the LICENSE file in the root directory of this source tree.

@@ -14,6 +14,8 @@ import numpy as np
 
 HASH_TYPE: Type[np.uint64] = np.uint64
 
+GETPY_WARNING = False
+
 
 class AbstractDedupHashSet(Sized, Iterable[np.uint64]):
     """A dict-like that returns `True` for keys that have been added more than once.
@@ -106,6 +108,13 @@ class NaiveHashSet(dict, AbstractDedupHashSet):
 
     def __init__(self, iterable=None):
         super().__init__()
+        global GETPY_WARNING
+        if GETPY_WARNING:
+            warnings.warn(
+                "Module 'getpy' not found. Deduplication will take more RAM."
+                " Try `pip install cc_net[getpy]"
+            )
+        GETPY_WARNING = False
 
     def __contains__(self, values):
         """Returns `True` if the object has been added at list once."""
@@ -175,7 +184,7 @@ try:
 
     FlatHashSet: Type[AbstractDedupHashSet] = _FlatHashSet
 except ImportError:
-    warnings.warn("Module 'getpy' not found. Deduplication will take more RAM")
+    GETPY_WARNING = True
     FlatHashSet = NaiveHashSet
 
 
