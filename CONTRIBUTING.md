@@ -12,6 +12,7 @@ We actively welcome your pull requests.
 5. Ensure the test suite passes `pytest tests`
 6. Make sure your code lints `isort -rc && black . && mypy --ignore-missing-imports .`
 7. If you haven't already, complete the Contributor License Agreement ("CLA").
+8. `make test` runs an end-to-end test. Run it once from scratch (by removing `test_data/`) if you have changed the mining.
 
 ## Contributor License Agreement ("CLA")
 
