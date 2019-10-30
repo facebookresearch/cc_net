@@ -426,7 +426,7 @@ def _regroup(conf: Config, inputs: List[Path], output: Path) -> str:
     return f"Regrouped {output}"
 
 
-def _validate_test(conf: Config, generate: int = False):
+def _validate_test(conf: Config, generate: bool = False):
     stats: Dict[str, dict] = {}
     for file in sorted((conf.output_dir / "regroup" / conf.dump).glob("*.json.gz")):
         fname = f"regroup/{conf.dump}/{file.name}"

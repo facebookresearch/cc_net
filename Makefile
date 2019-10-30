@@ -41,7 +41,7 @@ install: bin/lid.bin $(KENLM) $(SPM_TRAIN)
 	@if [ -f "data" ]; then\
 		echo "Please create/simlink a 'data' directory.";\
 	fi
-	@if ! python -c "import kenlm, fasttext, sentencepiece, getpy"; then\
+	@if ! python -c "import cc_net"; then\
 		pip install -U .;\
 	fi
 	echo " --> All dependencies looks good !"
@@ -169,3 +169,13 @@ bin/spm_train: third_party/sentencepiece
 	# $ cd $</build
 	# $ sudo make install
 	# $ sudo ldconfig -v
+
+test:
+	python -m cc_net mine --config test
+	mkdir -p test_data/mini
+	python -m cc_net.minify minify -f test_data/regroup/2019-09 -o test_data/mini/2019-09
+	mkdir -p test_data/reconstruct
+	python -m cc_net.minify unminify -f test_data/mini/2019-09 -o test_data/reproduce/2019-09
+	diff \
+		<(zcat test_data/regroup/2019-09/de_head_0000.json.gz | head | jq -r .raw_content) \
+		<(zcat test_data/reproduce/2019-09/de_head_0000.json.gz | head | jq -r .raw_content)

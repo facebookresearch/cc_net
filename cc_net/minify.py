@@ -81,11 +81,8 @@ class Minifier(jsonql.Transformer):
         if not content:
             return None
         hashes = get_hashes(content.split("\n"))
-        collision: Set[bytes] = set()
-        for h in hashes:
-            if h in collision:
-                self.collisions += 1
-            collision.add(h)
+        hashes_set = set(hashes)
+        self.collisions += len(hashes) - len(hashes_set)
 
         fields = self.fields
         keys = list(doc.keys())
@@ -127,6 +124,7 @@ class Unminifier(jsonql.Transformer):
         self.read_doc = 0
         self.missed_doc = 0
         self.missed_par = 0
+        self.processed_par = 0
 
     def look_for(self, minified: Iterable[dict]) -> None:
         """Mark the given minified documents as "interesting".
@@ -187,13 +185,19 @@ class Unminifier(jsonql.Transformer):
         hashes = set(_b2i(h) for h in decode_hashes(doc.pop("hashes")))
         content = full_doc["raw_content"]
         cleaned = []
+        processed_par = 0
         for line in content.split("\n"):
             h = _str_hash(line)
+            processed_par += 1
             if h not in hashes:
                 continue
+            # In case of in-document duplicate we keep only the first occurence.
+            # TODO: only keep two occurences if the hash appears twice
+            hashes.remove(h)
             cleaned.append(line)
 
-        self.missed_par += len(cleaned) - len(hashes)
+        self.missed_par += len(hashes)
+        self.processed_par += processed_par
         if not cleaned:
             self.missed_doc += 1
             return None
@@ -213,9 +217,14 @@ class Unminifier(jsonql.Transformer):
         mem = mem_footprint_gb()
         len_cache = len(self.mem_cache)
         summ.append(
-            f"Read {self.read_doc:_}, missed {self.missed_doc} docs, {self.missed_par} par."
-            f" Stocking {len_cache:_} doc in {mem:.1}Gb."
+            f"Read {self.read_doc:_}, stocking {len_cache:_} doc in {mem:.1}Gb."
         )
+        if self.missed_doc:
+            r = self.missed_doc / self.processed
+            summ.append(f"! Missed {self.missed_doc} documents ({r:.1%}) !")
+        if self.missed_par:
+            r = self.missed_par / self.processed_par
+            summ.append(f"! Missed {self.missed_par} paragraphs ({r:.1%}) !")
         return summ
 
 
@@ -257,10 +266,15 @@ def minify(
 
 def unminify_file(file: Union[Path, str], output: Path, cache_dir: Path = None):
     unminifier = Unminifier(cache_dir)
-    jsonql.run_pipes(unminifier, file=file, output=output)
-    f_size = file.stat().st_size if isinstance(file, Path) else 0
+    with jsonql.smart_open(file) as f:
+        mini = [m for m in jsonql.read_jsons(f)]
+    unminifier.look_for(mini)
+
+    jsonql.run_pipes(unminifier, file=iter(mini), output=output)
+    f_size = Path(file).stat().st_size if Path(file).exists() else 0
     o_size = output.stat().st_size
-    return f"Unminified {output} ({f_size} -> {o_size})"
+    mb = 1024 ** 2
+    return f"Unminified {output} ({f_size // mb:_}Mb -> {o_size // mb:_}Mb)"
 
 
 def unminify(
