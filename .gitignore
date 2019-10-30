@@ -1,0 +1,24 @@
+# Dataset
+data
+test_data/
+output/
+
+# Binary files
+bin
+
+# Third party code
+third_party/
+
+# Doit database to remember which jobs have run
+.doit.db.*
+doit_logs
+
+# Generic to python
+__pycache__/
+*.pyc
+.mypy_cache/
+
+scratch/
+notebooks/
+
+/config/
