@@ -30,7 +30,7 @@ setup(
         "requests>=2.22.0",
         "fasttext>=0.9.1",
         "sentencepiece>=0.1.82",
-        "kenlm @ https://github.com/kpu/kenlm/archive/master.zip",
+        "kenlm @ git+https://github.com/kpu/kenlm.git@master",
         "func_argparse>=1.0.3",
         "sacremoses",
     ],

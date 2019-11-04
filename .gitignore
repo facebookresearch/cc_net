@@ -17,4 +17,7 @@ __pycache__/
 /scratch/
 /notebooks/
 
+/build/
+/cc_net.egg-info/
 /config/
+/dist/

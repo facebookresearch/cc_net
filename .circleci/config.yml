@@ -61,8 +61,8 @@ jobs:
           name: Check formatting
           command: |
             . venv/bin/activate
-            isort --check cc_net
-            black --check cc_net
+            isort --check -rc
+            black --check .
       - store_artifacts:
           path: test-reports
           destination: test-reports

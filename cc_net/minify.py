@@ -8,6 +8,7 @@
 import base64
 import hashlib
 import itertools
+import shutil
 from pathlib import Path
 from typing import ContextManager, Dict, Iterable, List, Optional, Set, Union
 from urllib.parse import urlparse
@@ -144,7 +145,11 @@ class Unminifier(jsonql.Transformer):
         if not file.exists():
             self.retrieved_segments += 1
             # TODO: make this write thread-safe.
-            file.write_bytes(jsonql.request_get_content(url))
+            # create a different tmp file for each process to avoid collisions.
+            h = hex(hash(file))[2:10]
+            tmp = file.with_name(f"tmp_{h}." + file.name)
+            tmp.write_bytes(jsonql.request_get_content(url))
+            shutil.move(tmp, file)
 
         return jsonql.smart_open(file)
 
@@ -270,7 +275,9 @@ def unminify_file(file: Union[Path, str], output: Path, cache_dir: Path = None):
         mini = [m for m in jsonql.read_jsons(f)]
     unminifier.look_for(mini)
 
-    jsonql.run_pipes(unminifier, file=iter(mini), output=output)
+    tmp = output.with_name("tmp." + output.name)
+    jsonql.run_pipes(unminifier, file=iter(mini), output=tmp)
+    shutil.move(tmp, output)
     f_size = Path(file).stat().st_size if Path(file).exists() else 0
     o_size = output.stat().st_size
     mb = 1024 ** 2
@@ -296,14 +303,18 @@ def unminify(
     outputs = [output_dir / str(f).split("/")[-1] for f in files]
     if cache_dir is None:
         cache_dir = output_dir / "wet_cache"
+    files = [f for f, o in zip(files, outputs) if not o.exists()]
+    outputs = [o for o in outputs if not o.exists()]
+    if not files:
+        return
     ex = get_executor(
         "unminify",
         output_dir / "logs",
         execution,
-        timeout_hour=4,
+        timeout_hour=8,
         cpus=1,
         task_parallelism=parallelism,
-        mem_gb=8,
+        mem_gb=32,
     )
     ex(unminify_file, files, outputs, itertools.repeat(cache_dir))
 
