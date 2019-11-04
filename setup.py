@@ -37,7 +37,7 @@ setup(
     extras_require={
         "dev": ["mypy>=0.730", "pytest", "black", "isort"],
         # To use scripts inside cc_net/tools
-        "tools": ["sentence_splitter"],
+        "tools": ["lxml", "sentence_splitter"],
         # Allows to run on a SLURM cluster. Not open sourced yet.
         "slurm": ["submitit"],
         # Memory-efficient hashset.
