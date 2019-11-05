@@ -6,7 +6,9 @@
 #
 
 import base64
+import gzip
 import hashlib
+import io
 import itertools
 import shutil
 from pathlib import Path
@@ -148,8 +150,16 @@ class Unminifier(jsonql.Transformer):
             # create a different tmp file for each process to avoid collisions.
             h = hex(hash(file))[2:10]
             tmp = file.with_name(f"tmp_{h}." + file.name)
-            tmp.write_bytes(jsonql.request_get_content(url))
-            shutil.move(tmp, file)
+            content = jsonql.request_get_content(url)
+            tmp.write_bytes(content)
+            # don't overwrite a file that might being read from other process.
+            if not file.exists():
+                shutil.move(tmp, file)
+            else:
+                tmp.unlink()
+            # read from memory if possible
+            f = gzip.open(io.BytesIO(content), mode="rt")
+            return f
 
         return jsonql.smart_open(file)
 
