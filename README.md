@@ -1,6 +1,6 @@
 # cc_net
 
-Tools to download and clean Common Crawl as introduced in our paper [CCNet]()
+Tools to download and clean Common Crawl as introduced in our paper [CCNet](https://arxiv.org/abs/1911.00359)
 
 [![CircleCI](https://circleci.com/gh/facebookresearch/cc_net.svg?style=svg)](https://circleci.com/gh/facebookresearch/cc_net)
 
