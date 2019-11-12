@@ -42,7 +42,7 @@ Each step needs the previous step to be over before starting.
 You can launch the full pipeline using `python -m cc_net mine`.
 
 * `python -m cc_net mine --help` shows help
-* `python -m cc_net mine --dump_id 2019-13` downloads a specific snapshot
+* `python -m cc_net mine --dump 2019-13` downloads a specific snapshot
 * `python -m cc_net mine -l my -l gu` 
 restricts to specific languages
 * `python -m cc_net mine --lm_dir my_lms/` uses custom LMs
@@ -56,7 +56,7 @@ Given the CPU required to run the full pipeline on such a big corpus we share a 
 You can reconstruct the corpus used in the paper by using:
 
 ```sh
-python -m cc_net reproduce --dump_id 2019-09
+python -m cc_net reproduce --dump 2019-09
 ```
 
 ## Adapting to your infrastructure
@@ -68,7 +68,7 @@ To run the tasks in-process use `--execution debug`.
 
 ## Output format
 
-Generated files are compressed JSON files. There is on JSON object per line.
+Generated files are compressed JSON files. There is one JSON object per line.
 
 __List of fields__:
 
