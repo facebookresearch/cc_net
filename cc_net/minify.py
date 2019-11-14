@@ -10,6 +10,7 @@ import gzip
 import hashlib
 import io
 import itertools
+import os
 import shutil
 from pathlib import Path
 from typing import ContextManager, Dict, Iterable, List, Optional, Set, Union
@@ -146,10 +147,7 @@ class Unminifier(jsonql.Transformer):
         file = self.cache_dir / segment.split("/")[-1]
         if not file.exists():
             self.retrieved_segments += 1
-            # TODO: make this write thread-safe.
-            # create a different tmp file for each process to avoid collisions.
-            h = hex(hash(file))[2:10]
-            tmp = file.with_name(f"tmp_{h}." + file.name)
+            tmp = file.with_name(f"tmp_{os.getpid()}." + file.name)
             content = jsonql.request_get_content(url)
             tmp.write_bytes(content)
             # don't overwrite a file that might being read from other process.
@@ -158,8 +156,7 @@ class Unminifier(jsonql.Transformer):
             else:
                 tmp.unlink()
             # read from memory if possible
-            f = gzip.open(io.BytesIO(content), mode="rt")
-            return f
+            return gzip.open(io.BytesIO(content), mode="rt")
 
         return jsonql.smart_open(file)
 
@@ -338,7 +335,8 @@ def select_urls(
         for file in f:
             file = file.strip()
             lang, buck, shard = file.split(".")[0].split("_")
-            if bucket != "all" and bucket != buck:
+            if bucket != "all" and buck != "all" and bucket != buck:
+                # File named "all_xx" means that language "xx" didn't have a LM
                 continue
             if languages_set and lang not in languages_set:
                 continue
@@ -350,6 +348,7 @@ def reproduce(
     language: List[str] = None,
     dump: str = "2019-09",
     bucket: str = "head",
+    shard: str = None,
     output_dir: Path = DATA / "reconstruct",
     execution: str = "mp",
     parallelism: int = -1,
@@ -358,13 +357,27 @@ def reproduce(
     """Reproduce paper results from official CC snapshot and precomputed results.
 
     - dump: CC dump id
-    - bucket: can be one of ("head", "middle", "tail", "all")
+    - language: languages to keep (defaults to all)
+    - bucket: quality bucket ("head", "middle", "tail", "all")
+        - head: highest quality according to wikipedia-trained LM
+        - tail: lowest quality
+        - all: get all buckets
+        See paper for more details: https://arxiv.org/abs/1911.00359
+        Languages without an LM, will have only one bucket "all" which is always
+        downloaded.
+    - shard: select one specific shard (format: {lang}_{bucket}_{id})
+        see https://dl.fbaipublicfiles.com/cc_net/2019-09/files.txt for available shards
     - ouput_dir: output directory
     - execution: how to parallelize ("mp", "debug", "slurm", ...)
     - cache_dir: where the CC .wet files will be downloaded.
     """
     output_dir.mkdir(exist_ok=True, parents=True)
-    urls = select_urls(dump, language, bucket)
+    if shard is not None:
+        if not shard.endswith(".json.gz"):
+            shard += ".json.gz"
+        urls = [CC_NET_ROOT_FOLDER + dump + "/" + shard]
+    else:
+        urls = select_urls(dump, language, bucket)
     unminify(urls, output_dir / dump, execution, parallelism, cache_dir)
 
 

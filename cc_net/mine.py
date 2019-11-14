@@ -201,7 +201,7 @@ def hashes(conf: Config) -> List[Path]:
 
     hashes_dir.mkdir(parents=True, exist_ok=True)
     # With FlatHashSet we need ~2Gb of RAM / shard, but we need to account for
-    # overheard due to the dynamic allocation works.
+    # overhead due to how the dynamic allocation works.
     ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2)
     ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
 
