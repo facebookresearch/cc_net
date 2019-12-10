@@ -1,6 +1,17 @@
 # cc_net
 
-Tools to download and clean Common Crawl as introduced in our paper [CCNet](https://arxiv.org/abs/1911.00359)
+Tools to download and clean Common Crawl as introduced in our paper [CCNet](https://arxiv.org/abs/1911.00359).
+
+If you found these resources useful, please consider citing:
+
+```
+@article{wenzek2019ccnet,
+  title={Ccnet: Extracting high quality monolingual datasets from web crawl data},
+  author={Wenzek, Guillaume and Lachaux, Marie-Anne and Conneau, Alexis and Chaudhary, Vishrav and Guzman, Francisco and Joulin, Armand and Grave, Edouard},
+  journal={arXiv preprint arXiv:1911.00359},
+  year={2019}
+}
+```
 
 [![CircleCI](https://circleci.com/gh/facebookresearch/cc_net.svg?style=svg)](https://circleci.com/gh/facebookresearch/cc_net)
 
