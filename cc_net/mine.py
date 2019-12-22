@@ -476,19 +476,16 @@ def _validate_test(conf: Config, generate: bool = False):
             )
 
 
-def get_main_parser(subparsers) -> ArgumentParser:
-    p: Optional[ArgumentParser] = None
-    if subparsers is not None:
-        documentation = Config.__doc__.strip().split("\n")[0]
-        p = subparsers.add_parser("mine", help=documentation)
-        assert p is not None
-        p.set_defaults(__command=main)
-    p = func_argparse.func_argparser(Config, p)
-    p.add_argument("--config", type=str, default="base")
+def get_main_parser() -> ArgumentParser:
+    # Generates the 'main' parser by patching a 'Config' parser
+    p = func_argparse.func_argparser(Config)
 
     # Override defaults value to None, so we know what was set by the user.
     # Note that it will keep the original default values in the help message.
     p.set_defaults(**{f: None for f in Config._fields})
+
+    p.add_argument("--config", type=str, default="base")
+    p.set_defaults(__command=main)
     return p
 
 
@@ -518,5 +515,4 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
 
 
 if __name__ == "__main__":
-    parser = get_main_parser(None)
-    main(**vars(parser.parse_args()))
+    func_argparse.parse_and_call(get_main_parser())

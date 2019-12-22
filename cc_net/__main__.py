@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-import argparse
 
 import func_argparse
 
@@ -14,17 +13,11 @@ import cc_net.minify
 
 
 def main():
-    parser = argparse.ArgumentParser(description=cc_net.mine.__doc__, add_help=True)
-    subparsers = parser.add_subparsers()
-
-    cc_net.mine.get_main_parser(subparsers)
-    func_argparse.add_fn_subparser(cc_net.minify.reproduce, subparsers)
-
-    parsed_args = vars(parser.parse_args())
-    command = parsed_args.pop("__command", None)
-    if not command:
-        return parser.print_usage()
-    command(**parsed_args)
+    parser = func_argparse.multi_argparser(
+        mine=cc_net.mine.get_main_parser(),
+        reproduce=func_argparse.func_argparser(cc_net.minify.reproduce),
+    )
+    func_argparse.parse_and_call(parser)
 
 
 if __name__ == "__main__":
