@@ -15,6 +15,7 @@ setup(
     description="Tools to download and clean Common Crawl",
     keywords="common crawl dataset",
     url="https://github.com/facebookresearch/cc_net",
+    license="CC-BY-NC-4.0",
     project_urls={
         "Bug Tracker": "https://github.com/facebookresearch/cc_net/issues",
         "Source Code": "https://github.com/facebookresearch/cc_net",
@@ -33,6 +34,7 @@ setup(
         "kenlm @ git+https://github.com/kpu/kenlm.git@master",
         "func_argparse>=1.1.1",
         "sacremoses",
+        "typing_extensions",
     ],
     extras_require={
         "dev": ["mypy>=0.730", "pytest", "black", "isort"],

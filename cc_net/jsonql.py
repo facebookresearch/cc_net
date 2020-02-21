@@ -38,6 +38,7 @@ from typing import (
     Iterator,
     List,
     Optional,
+    Sequence,
     TextIO,
     Tuple,
     Union,
@@ -611,7 +612,9 @@ class where(Transformer):
     Ex: `jsonql where 'len({text}) > 100'`
     """
 
-    def __init__(self, clauses: List[Union[str, FilterFn]], requires: List[str] = []):
+    def __init__(
+        self, clauses: Sequence[Union[str, FilterFn]], requires: List[str] = []
+    ):
         super().__init__()
         self.raw_clauses = clauses
         self.requires = requires
