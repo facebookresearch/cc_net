@@ -6,7 +6,6 @@
 #
 
 import logging
-import shutil
 import subprocess
 from pathlib import Path
 from typing import List
@@ -40,8 +39,8 @@ def reshard(
         tmp = _get_tmp(output)
     logging.info(f"Resharding {inputs} to {tmp}, will move later to {output}")
     jsonql.run_pipes(file=inputs, output=tmp)
-    shutil.move(tmp, output)
-    shutil.move(get_index(tmp), get_index(output))
+    tmp.replace(output)
+    get_index(tmp).replace(get_index(output))
 
     if not (free_original or rm_original):
         return output
@@ -75,7 +74,7 @@ def fast_reshard(
     with open(tmp, "wb") as o:
         subprocess.run(["cat"] + [str(f) for f in inputs], stdout=o)
 
-    shutil.move(tmp, output)
+    tmp.replace(output)
     indexes_files = [get_index(i) for i in inputs]
     existing_indexes = sum(i.exists() for i in indexes_files)
     assert (

@@ -14,7 +14,6 @@ The pipeline parameters are described in the `Config` class.
 
 import hashlib
 import json
-import shutil
 import time
 import warnings
 from argparse import ArgumentParser
@@ -171,10 +170,10 @@ def finalize(tmp_output: Path, output: Path):
     if not tmp_output.exists():
         warnings.warn(f"Targeted tmp output {tmp_output} doesn't exists.")
     tmp_index = tmp_output.parent / (tmp_output.name + ".index")
-    return shutil.move(tmp_output, output)
+    return tmp_output.replace(output)
 
     if tmp_index.exists():
-        shutil.move(tmp_index, output.parent / (output.name + ".index"))
+        tmp_index.replace(output.parent / (output.name + ".index"))
 
 
 def _transpose(iterable: Sequence[Tuple[Any, ...]], n=-1) -> Tuple[List, ...]:

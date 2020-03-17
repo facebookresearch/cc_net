@@ -11,7 +11,6 @@ Creates mono-lingual corpus from Wikipedia.
 
 import functools
 import re
-import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -47,7 +46,7 @@ def opening(file: Path, output: Path = None, n_docs: int = 1_000_000):
         output=tmp(output) if output else None,
     )
     if output:
-        shutil.move(tmp(output), output)
+        tmp(output).replace(output)
 
 
 def extract_opening_text(source, n_docs: int = 10_000):
@@ -119,7 +118,7 @@ def get_cirrus_urls(date: str = None) -> Dict[str, str]:
 
 def wget(url: str, output: Path):
     subprocess.run(["wget", url, "-O", tmp(output), "-q"], check=True)
-    shutil.move(tmp(output), output)
+    tmp(output).replace(output)
     assert (
         output.stat().st_size > 10_000
     ), f"File {output} downloaded from {url} looks too small"

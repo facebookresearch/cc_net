@@ -11,7 +11,6 @@ import hashlib
 import io
 import itertools
 import os
-import shutil
 from pathlib import Path
 from typing import ContextManager, Dict, Iterable, List, Optional, Set, Union
 from urllib.parse import urlparse
@@ -152,7 +151,7 @@ class Unminifier(jsonql.Transformer):
             tmp.write_bytes(content)
             # don't overwrite a file that might being read from other process.
             if not file.exists():
-                shutil.move(tmp, file)
+                tmp.replace(file)
             else:
                 tmp.unlink()
             # read from memory if possible
@@ -178,9 +177,10 @@ class Unminifier(jsonql.Transformer):
                 k = get_doc_key(d["digest"])
                 if k not in keys:
                     continue
+                # prevent the doc from being read twice
+                self.keys.remove(k)
                 self.mem_cache[k] = d
 
-        self.log_summary()
         return self.mem_cache.pop(key, None)
 
     def do(self, doc: dict) -> Optional[dict]:
@@ -228,8 +228,10 @@ class Unminifier(jsonql.Transformer):
         summ = super().summary()
         mem = mem_footprint_gb()
         len_cache = len(self.mem_cache)
+        if len_cache > 2000:
+            breakpoint()
         summ.append(
-            f"Read {self.read_doc:_}, stocking {len_cache:_} doc in {mem:.1}Gb."
+            f"Read {self.read_doc:_}, stocking {len_cache:_} doc in {mem:.1f}g."
         )
         if self.missed_doc:
             r = self.missed_doc / self.processed
@@ -284,7 +286,7 @@ def unminify_file(file: Union[Path, str], output: Path, cache_dir: Path = None):
 
     tmp = output.with_name("tmp." + output.name)
     jsonql.run_pipes(unminifier, file=iter(mini), output=tmp)
-    shutil.move(tmp, output)
+    tmp.rename(output)
     f_size = Path(file).stat().st_size if Path(file).exists() else 0
     o_size = output.stat().st_size
     mb = 1024 ** 2

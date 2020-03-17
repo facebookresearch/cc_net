@@ -20,11 +20,11 @@ from typing import Iterable, List, Optional, Set, Tuple
 
 import func_argparse
 from kenlm import Model as KenlmModel
-from sentence_splitter import SentenceSplitter
 from sentencepiece import SentencePieceProcessor
 
 import submitit
 from cc_net import dedup, jsonql, perplexity, text_normalizer
+from sentence_splitter import SentenceSplitter
 
 KENLM = Path("./bin/lmplz")
 KENLM_BUILD = Path("./bin/build_binary")
