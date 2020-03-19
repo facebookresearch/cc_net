@@ -174,8 +174,8 @@ test:
 	python -m cc_net mine --config test
 	mkdir -p test_data/mini
 	python -m cc_net.minify minify -f test_data/regroup/2019-09 -o test_data/mini/2019-09
-	mkdir -p test_data/reconstruct
-	python -m cc_net.minify unminify -f test_data/mini/2019-09 -o test_data/reproduce/2019-09
+	mkdir -p test_data/reproduce
+	python cc_net/minify.py unminify -f test_data/mini/2019-09 -o test_data/reproduce/2019-09
 	diff \
-		<(zcat test_data/regroup/2019-09/de_head_0000.json.gz | head | jq -r .raw_content) \
-		<(zcat test_data/reproduce/2019-09/de_head_0000.json.gz | head | jq -r .raw_content)
+		<(zcat test_data/regroup/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content) \
+		<(zcat test_data/reproduce/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content)
