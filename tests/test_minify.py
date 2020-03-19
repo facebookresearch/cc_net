@@ -65,7 +65,7 @@ def test_unminify(http_from_disk):
 Facts are stubborn things, but statistics are more pliable.
 Fiction is obliged to stick to possibilities. Truth isn't."""
 
-    doc = {
+    cc_doc = {
         "url": "http://sample_english.com",
         "date_download": "2019-03-18T00:00:00Z",
         "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
@@ -77,17 +77,24 @@ Fiction is obliged to stick to possibilities. Truth isn't."""
         "length": len(quotes),
         "original_nlines": 4,
         "original_length": 353,
+    }
+    metadata = {
         "language": "en",
         "language_score": 0.99,
         "perplexity": 151.5,
         "bucket": "head",
     }
+    full_doc = dict(**cc_doc, **metadata)
 
     # make a copy of doc since minifier operates in place
-    mini = minify.Minifier()(dict(**doc))
-    assert mini != doc
+    mini = minify.Minifier()(full_doc)
+
+    assert mini != cc_doc
+    assert {k: mini[k] for k in metadata} == metadata
+
     unminifier = minify.Unminifier()
-    assert doc == unminifier(mini)
+    unminifier.look_for([mini])
+    assert full_doc == unminifier(cc_doc)
 
 
 def test_unminify_hit_mem_cache(http_from_disk):
@@ -109,8 +116,9 @@ def test_unminify_hit_mem_cache(http_from_disk):
     ]
     unminifier = minify.Unminifier()
     unminifier.look_for(mini_docs)
-    contents = [d["raw_content"] for d in unminifier.map(mini_docs)]
-    assert unminifier.retrieved_segments == 1
+    cc = process_wet_file.CCSegmentsReader(["crawl-data/sample.warc.txt"])
+    contents = [d["raw_content"] for d in unminifier.map(cc) if d is not None]
+    assert cc.retrieved_segments == 1
 
     assert [
         "Facts are stubborn things, but statistics are more pliable.",

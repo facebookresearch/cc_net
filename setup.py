@@ -33,6 +33,7 @@ setup(
         "sentencepiece>=0.1.82",
         "kenlm @ git+https://github.com/kpu/kenlm.git@master",
         "func_argparse>=1.1.1",
+        "psutil>=5.6.3",
         "sacremoses",
         "typing_extensions",
     ],

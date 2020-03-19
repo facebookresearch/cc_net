@@ -118,7 +118,6 @@ class Unminifier(jsonql.Transformer):
         self.mem_cache: Dict[int, dict] = {}
 
         self._segments: Set[str] = set()
-        self.retrieved_segments = 0
         self.read_doc = 0
         self.missed_doc = 0
         self.missed_par = 0
