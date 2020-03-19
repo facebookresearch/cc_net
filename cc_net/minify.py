@@ -6,13 +6,10 @@
 #
 
 import base64
-import gzip
 import hashlib
-import io
 import itertools
-import os
 from pathlib import Path
-from typing import ContextManager, Dict, Iterable, List, Optional, Set, Union
+from typing import Dict, Iterable, List, Optional, Set, Union
 from urllib.parse import urlparse
 
 import numpy as np
@@ -20,7 +17,7 @@ import numpy as np
 from cc_net import jsonql
 from cc_net.execution import get_executor
 from cc_net.jsonql import mem_footprint_gb
-from cc_net.process_wet_file import WET_URL_ROOT, parse_warc_file
+from cc_net.process_wet_file import CCSegmentsReader
 
 HASH_SIZE = 4
 HASH_TYPE = np.uint32
@@ -115,14 +112,12 @@ class Unminifier(jsonql.Transformer):
         they are read.
     """
 
-    def __init__(self, cache_dir: Path = None):
+    def __init__(self):
         self.ready = True
-        self.keys: Set[int] = set()
-        if cache_dir is not None:
-            cache_dir.mkdir(exist_ok=True)
-        self.cache_dir = cache_dir
+        self.metadata: Dict[int, dict] = {}
         self.mem_cache: Dict[int, dict] = {}
 
+        self._segments: Set[str] = set()
         self.retrieved_segments = 0
         self.read_doc = 0
         self.missed_doc = 0
@@ -135,63 +130,17 @@ class Unminifier(jsonql.Transformer):
         """
         for d in minified:
             key = get_doc_key(d["digest"])
-            self.keys.add(key)
-
-    def open_segment(self, segment: str) -> ContextManager[Iterable[str]]:
-        url = "/".join((WET_URL_ROOT, segment))
-        if not self.cache_dir:
-            self.retrieved_segments += 1
-            return jsonql.open_remote_file(url)
-
-        file = self.cache_dir / segment.split("/")[-1]
-        if not file.exists():
-            self.retrieved_segments += 1
-            tmp = file.with_name(f"tmp_{os.getpid()}." + file.name)
-            content = jsonql.request_get_content(url)
-            tmp.write_bytes(content)
-            # don't overwrite a file that might being read from other process.
-            if not file.exists():
-                tmp.replace(file)
-            else:
-                tmp.unlink()
-            # read from memory if possible
-            return gzip.open(io.BytesIO(content), mode="rt")
-
-        return jsonql.smart_open(file)
-
-    def retrieve_doc(self, segment: str, digest: str) -> Optional[dict]:
-        """Look for the given document.
-
-        If the document is already in cache, it will be erased afterward.
-        """
-        key = get_doc_key(digest)
-        doc = self.mem_cache.pop(key, None)
-        if doc:
-            return doc
-
-        self.keys.add(key)
-        keys = self.keys
-        with self.open_segment(segment) as f:
-            for d in parse_warc_file(f):
-                self.read_doc += 1
-                k = get_doc_key(d["digest"])
-                if k not in keys:
-                    continue
-                # prevent the doc from being read twice
-                self.keys.remove(k)
-                self.mem_cache[k] = d
-
-        return self.mem_cache.pop(key, None)
+            self.metadata[key] = d
+            self._segments.add(d["cc_segment"])
 
     def do(self, doc: dict) -> Optional[dict]:
-        segment = doc["cc_segment"]
         digest = doc["digest"]
-
-        full_doc = self.retrieve_doc(segment, digest)
-        if not full_doc:
-            self.missed_doc += 1
+        key = get_doc_key(digest)
+        if key not in self.metadata:
             return None
-        return self.clean(doc, full_doc)
+
+        metadata = self.metadata.pop(key)
+        return self.clean(metadata, doc)
 
     def clean(self, doc: dict, full_doc: dict) -> Optional[dict]:
         hashes = set(_b2i(h) for h in decode_hashes(doc.pop("hashes")))
@@ -279,13 +228,13 @@ def minify(
 
 
 def unminify_file(file: Union[Path, str], output: Path, cache_dir: Path = None):
-    unminifier = Unminifier(cache_dir)
+    unminifier = Unminifier()
     with jsonql.smart_open(file) as f:
-        mini = [m for m in jsonql.read_jsons(f)]
-    unminifier.look_for(mini)
+        unminifier.look_for(jsonql.read_jsons(f))
 
     tmp = output.with_name("tmp." + output.name)
-    jsonql.run_pipes(unminifier, file=iter(mini), output=tmp)
+    cc = CCSegmentsReader(list(unminifier._segments), min_len=300, cache_dir=cache_dir)
+    jsonql.run_pipes(unminifier, file=cc, output=tmp)
     tmp.rename(output)
     f_size = Path(file).stat().st_size if Path(file).exists() else 0
     o_size = output.stat().st_size
@@ -312,6 +261,8 @@ def unminify(
     outputs = [output_dir / str(f).split("/")[-1] for f in files]
     if cache_dir is None:
         cache_dir = output_dir / "wet_cache"
+    if str(cache_dir) == "none":
+        cache_dir = None
     files = [f for f, o in zip(files, outputs) if not o.exists()]
     outputs = [o for o in outputs if not o.exists()]
     if not files:
@@ -351,7 +302,7 @@ def reproduce(
     dump: str = "2019-09",
     bucket: str = "head",
     shard: str = None,
-    output_dir: Path = DATA / "reconstruct",
+    output_dir: Path = DATA / "reproduce",
     execution: str = "mp",
     parallelism: int = -1,
     cache_dir: Path = None,

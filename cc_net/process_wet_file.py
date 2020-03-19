@@ -5,12 +5,17 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+import contextlib
+import gzip
+import io
 import logging
+import os
 import re
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional
+from typing import ContextManager, Iterable, Iterator, List, Optional, Sequence
 from urllib.parse import urlparse
 
 import func_argparse
@@ -147,14 +152,72 @@ def dl(
     logger.info(f"Done. {output} is ready.")
 
 
-class CCShardReader(Iterable[dict]):
+class CCSegmentsReader(Iterable[dict]):
+    def __init__(
+        self, segments: Sequence[str], min_len: int = 0, cache_dir: Path = None
+    ):
+        self._segments = segments
+        self.min_len = min_len
+        self.cache_dir = cache_dir
+        self.retrieved_segments = 0
+
+    def segment_url(self, segment: str):
+        return "/".join((WET_URL_ROOT, segment))
+
+    @property
+    def segments(self) -> Sequence[str]:
+        return self._segments
+
+    def open_segment(self, segment: str) -> ContextManager[Iterable[str]]:
+        url = self.segment_url(segment)
+        if not self.cache_dir:
+            self.retrieved_segments += 1
+            return jsonql.open_remote_file(url)
+
+        file = self.cache_dir / segment.split("/")[-1]
+        if not file.exists():
+            self.retrieved_segments += 1
+
+            content = jsonql.request_get_content(url)
+            tmp = _tmp(dir=self.cache_dir, prefix=file.name, suffix=".gz")
+            tmp.write_bytes(content)
+            # The file might have been created by another job while downloading.
+            if not file.exists():
+                tmp.replace(file)
+            else:
+                tmp.unlink()
+            return gzip.open(io.BytesIO(content), mode="rt")
+
+        return jsonql.smart_open(file)
+
+    def __iter__(self) -> Iterator[dict]:
+        n = len(self.segments)
+        for i, segment in enumerate(self.segments):
+            start = time.time()
+            # TODO: start downloading the next segment in the background
+            with self.open_segment(segment) as f:
+
+                for doc in parse_warc_file(iter(f), self.min_len):
+                    doc["cc_segment"] = segment
+                    yield doc
+
+            if i + 1 >= n:
+                continue
+            end = time.time()
+            delay = (end - start) / 3600 * (n - 1 - i)
+            logger.info(
+                f"Parsed {i + 1} / {n} files. Estimated remaining time: {delay:.1f}h"
+            )
+
+
+class CCShardReader(CCSegmentsReader):
     def __init__(
         self,
         dump: str,
         shard: int,
         num_shards: int,
         num_segments_per_shard: int = -1,
-        min_len: int = 0,
+        min_len: int = 300,
     ):
         """Downloads a shard of Common Crawl, and yields dict.
 
@@ -169,11 +232,11 @@ class CCShardReader(Iterable[dict]):
         self.shard = shard
         self.num_shards = num_shards
         self.num_segments_per_shard = num_segments_per_shard
-        self.min_len = min_len
-        self._segments: List[str] = []
+        super().__init__([], min_len=min_len)
 
     @property
-    def segments(self) -> List[str]:
+    def segments(self) -> Sequence[str]:
+        # Delaying the initialization allows to delay the looking up of the WET files
         if self._segments:
             return self._segments
         segments_file = cc_segments_url(self.dump)
@@ -187,26 +250,36 @@ class CCShardReader(Iterable[dict]):
         self._segments = segments[i_min:i_max]
         return self._segments
 
-    def segment_url(self, segment: str):
-        return "/".join((WET_URL_ROOT, segment))
 
-    def __iter__(self) -> Iterator[dict]:
-        n = len(self.segments)
-        for i, segment in enumerate(self.segments):
-            start = time.time()
-            # TODO: start downloading the next segment in the background
-            with jsonql.open_remote_file(self.segment_url(segment)) as f:
-                for doc in parse_warc_file(iter(f), self.min_len):
-                    doc["cc_segment"] = segment
-                    yield doc
+def _tmp(prefix: str = None, suffix: str = None, dir: Path = None) -> Path:
+    _, tmp_path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=dir)
+    return Path(tmp_path)
 
-            if i + 1 >= n:
-                continue
-            end = time.time()
-            delay = (end - start) / 3600 * (n - 1 - i)
-            logger.info(
-                f"Parsed {i + 1} / {n} files. Estimated remaining time: {delay:.1f}h"
-            )
+
+@contextlib.contextmanager
+def timer(name: str = "-"):
+    start = time.time()
+    yield None
+    delay = time.time() - start
+    print(f"{name} took {delay:.1f}s")
+
+
+def benchmark(tmp_path: Path):
+    segments = [
+        "crawl-data/CC-MAIN-2019-09/segments/1550249406966.99/wet/CC-MAIN-20190222220601-20190223002601-00441.warc.wet.gz"
+    ]
+    seg_file = tmp_path / "CC-MAIN-20190222220601-20190223002601-00441.warc.wet.gz"
+
+    with timer("from network"):
+        list(CCSegmentsReader(segments))
+
+    with timer("from network, with caching"):
+        list(CCSegmentsReader(segments, cache_dir=tmp_path))
+    assert seg_file.exists()
+
+    with timer("from disk"):
+        CCSegmentsReader(segments, cache_dir=tmp_path)
+    seg_file.unlink()
 
 
 if __name__ == "__main__":

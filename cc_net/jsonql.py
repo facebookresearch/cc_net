@@ -21,10 +21,9 @@ import json
 import logging
 import multiprocessing
 import os
-import platform
 import re
-import resource
 import sys
+import tempfile
 import time
 import warnings
 import zlib
@@ -47,6 +46,7 @@ from typing import (
 )
 
 import numpy as np
+import psutil
 import requests
 from typing_extensions import Literal, Protocol
 
@@ -56,7 +56,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M",
 )
 
-RUSAGE_UNIT = 1000 if platform.system() == "Linux" else 1
 NEWLINE = " N3WL1N3 "
 
 FilterFn = Callable[[dict], bool]
@@ -278,7 +277,7 @@ class Transformer:
     def log(self, message):
         self._logger.info(message)
 
-    def log_summary(self):
+    def log_summary(self) -> None:
         if not self.ready:
             self.log("Not ready.")
             return
@@ -311,10 +310,10 @@ class Transformer:
         # the object so we need to initialize everything.
         self.__enter__()
 
-    def _prepare(self):
+    def _prepare(self) -> None:
         pass
 
-    def __enter__(self):
+    def __enter__(self) -> "Transformer":
         # In multiprocessing __enter__ is always called twice, so we are idempotent.
         # Because we call __enter__ when deserializing this transformer and
         # also when the parent transformer is deserialized.
@@ -1324,9 +1323,19 @@ def grouper(iterable, n):
         yield group
 
 
+PROCESS = psutil.Process()
+
+
 def mem_footprint_gb(pid=None):
-    max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return max_rss / 1_000_000_000 * RUSAGE_UNIT
+    rss = PROCESS.memory_info().rss
+    return rss / 1_000_000_000
+
+
+def _tmp(output: Path) -> Path:
+    suffix = "".join(output.suffixes)
+    prefix = output.name[: -len(suffix)]
+    _, tmp_path = tempfile.mkstemp(dir=output.parent, prefix=prefix, suffix=suffix)
+    return Path(tmp_path)
 
 
 if __name__ == "__main__":
