@@ -218,6 +218,7 @@ class CCShardReader(CCSegmentsReader):
         num_shards: int,
         num_segments_per_shard: int = -1,
         min_len: int = 300,
+        cache_dir: Path = None,
     ):
         """Downloads a shard of Common Crawl, and yields dict.
 
@@ -228,11 +229,11 @@ class CCShardReader(CCSegmentsReader):
             num_segments_per_shard: if set will limit the number of files by shard.
                 Useful for testing.
         """
+        super().__init__([], min_len=min_len, cache_dir=cache_dir)
         self.dump = dump
         self.shard = shard
         self.num_shards = num_shards
         self.num_segments_per_shard = num_segments_per_shard
-        super().__init__([], min_len=min_len)
 
     @property
     def segments(self) -> Sequence[str]:

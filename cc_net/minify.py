@@ -115,7 +115,6 @@ class Unminifier(jsonql.Transformer):
     def __init__(self):
         self.ready = True
         self.metadata: Dict[int, dict] = {}
-        self.mem_cache: Dict[int, dict] = {}
 
         self._segments: Set[str] = set()
         self.read_doc = 0
@@ -175,7 +174,7 @@ class Unminifier(jsonql.Transformer):
     def summary(self) -> List[str]:
         summ = super().summary()
         mem = mem_footprint_gb()
-        len_cache = len(self.mem_cache)
+        len_cache = len(self.metadata)
         if len_cache > 2000:
             breakpoint()
         summ.append(

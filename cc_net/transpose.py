@@ -2,7 +2,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Union
 
 from cc_net import jsonql, minify, process_wet_file
 from cc_net.execution import get_executor
@@ -100,7 +100,50 @@ def transpose(
     ex(_transpose_files, groups, tmp_dirs)
 
 
+class LinearUnminifier(minify.Unminifier):
+    def __init__(self, folder: Path):
+        super().__init__()
+        self.folder = folder
+        self.segment: str = ""
+        self.segments_read_twice = 0
+
+    def fetch_metadata(self, segment: str) -> None:
+        file_name = segment.split("/")[-1]
+        assert file_name.endswith(".warc.wet.gz")
+        file_name = file_name.replace(".warc.wet.gz", ".json.gz")
+        with jsonql.smart_open(self.folder / file_name) as o:
+            metadata = jsonql.read_jsons(o)
+            self.metadata = {m["digest"]: m for m in metadata}
+
+        self.segment = segment
+        if segment in self._segments:
+            self.log("Cache miss")
+            self.segments_read_twice += 1
+        self._segments.add(segment)
+
+    def do(self, doc: dict) -> Optional[dict]:
+        if self.segment != doc["cc_segment"]:
+            self.fetch_metadata(doc["cc_segment"])
+        return super().do(doc)
+
+
+def unminify(
+    folder: Path, dump: str, output_dir: Path, shard: int = 0, cache_dir: Path = None
+):
+    unminifier = LinearUnminifier(folder)
+    output = output_dir / dump / f"all_{shard:04d}.json.gz"
+    tmp = jsonql._tmp(output)
+    cc = process_wet_file.CCShardReader(dump, shard, 1600, cache_dir=cache_dir)
+
+    jsonql.run_pipes(unminifier, file=cc, output=tmp)
+    tmp.rename(output)
+    f_size = sum(Path(f).stat().st_size for f in folder.glob("*.gz"))
+    o_size = output.stat().st_size
+    mb = 1024 ** 2
+    return f"Unminified {output} ({f_size // mb:_}Mb -> {o_size // mb:_}Mb)"
+
+
 if __name__ == "__main__":
     import func_argparse
 
-    func_argparse.single_main(transpose)
+    func_argparse.main(transpose, unminify)
