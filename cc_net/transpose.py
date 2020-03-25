@@ -1,11 +1,23 @@
+import collections
 import json
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, NamedTuple, Optional
 
 from cc_net import jsonql, minify, process_wet_file
 from cc_net.execution import get_executor
+
+
+class Metadata(NamedTuple):
+    url: str
+    digest: str
+    cc_segment: str
+    language: str
+    language_score: float
+    perplexity: float
+    bucket: str
+    hashes: str
 
 
 class Transposer(jsonql.Transformer):
@@ -13,16 +25,20 @@ class Transposer(jsonql.Transformer):
 
     def __init__(self, output_dir: Path):
         self.output_dir = output_dir
-        self.segments: Dict[str, List[dict]] = {}
-
-    def _prepare(self) -> None:
-        self.output_dir.mkdir(exist_ok=True)
+        self.segments: Dict[str, List[Metadata]] = collections.defaultdict(list)
 
     def do(self, doc: dict) -> None:
-        doc_seg = doc["cc_segment"]
-        if doc_seg not in self.segments:
-            self.segments[doc_seg] = []
-        self.segments[doc_seg].append(doc)
+        metadata = Metadata(
+            doc["url"],
+            doc["digest"],
+            doc["cc_segment"],
+            doc["language"],
+            doc["language_score"],
+            doc.get("perplexity", -1),
+            doc["bucket"],
+            doc["hashes"],
+        )
+        self.segments[metadata.cc_segment].append(metadata)
         return None
 
     def speed_summary(self) -> str:
@@ -33,16 +49,22 @@ class Transposer(jsonql.Transformer):
 
     def close(self):
         """Dump metadata by segments"""
+        tmp = self.output_dir.with_suffix(".tmp")
+        tmp.mkdir(exist_ok=True)
         for segment, meta in self.segments.items():
             file_name = segment.split("/")[-1]
             assert file_name.endswith(".warc.wet.gz")
             file_name = file_name.replace(".warc.wet.gz", ".json.gz")
-            out = self.output_dir / file_name
+            out = tmp / file_name
 
             # this is not sorted, we should sort it afterward
             with jsonql.smart_open(out, "w") as o:
                 for m in meta:
-                    print(json.dumps(m), file=o)
+                    d = m._asdict()
+                    if m.perplexity < 0:
+                        d.pop("perplexity")
+                    print(json.dumps(d), file=o)
+        tmp.rename(self.output_dir)
 
 
 def sort_metadata(metadata_file: Path, cache_dir: Path = None) -> None:
@@ -64,14 +86,14 @@ def sort_metadata(metadata_file: Path, cache_dir: Path = None) -> None:
     tmp.rename(metadata_file)
 
 
-def _transpose_files(files: List[Path], output_dir: Path):
+def _transpose_file(file: Path, output_dir: Path):
     mi = minify.Minifier()
     tr = Transposer(output_dir)
-    return jsonql.run_pipes(mi, tr, file=files, output="/dev/null")
+    return jsonql.run_pipes(mi, tr, file=file, output="/dev/null")
 
 
 def transpose(
-    dump: str, parallelism: int = 100, execution: str = "slurm", filter: str = None
+    dump: str, parallelism: int = 200, execution: str = "slurm", filter: str = None
 ) -> None:
 
     data = Path("data") / "regroup" / dump
@@ -84,20 +106,48 @@ def transpose(
         files = [f for f in files if re.match(filter, f.name)]
 
     print(f"Found {len(files)} files in {data}")
-    groups = list(jsonql.grouper(files, len(files) // parallelism))
-
     ex = get_executor(
         "transpose",
         output / "logs",
         execution,
         timeout_hour=10,
-        mem_gb=32,
+        mem_gb=64,
         cpus=2,
         task_parallelism=parallelism,
     )
 
-    tmp_dirs = [output / f"{i}" for i in range(len(groups))]
-    ex(_transpose_files, groups, tmp_dirs)
+    tr_dirs = [output / f.stem.replace(".json", "") for f in files]
+    files = [f for (f, o) in zip(files, tr_dirs) if not o.exists()]
+    tr_dirs = [o for o in tr_dirs if not o.exists()]
+    ex(_transpose_file, files, tr_dirs)
+
+
+def regroup_tr(dump: str, execution: str = "slurm", parallelism: int = 200):
+    data = Path("data") / "transposed" / dump
+    assert data.exists(), f"Dump directory not found: {data}"
+    output = Path("data") / "regroup_tr" / dump
+    output.mkdir(exist_ok=True, parents=True)
+
+    def _regroup(segment: str) -> None:
+        s = segment.split("/")[-1].replace(".warc.wet.gz", ".json.gz")
+        parts = [f / s for f in data.iterdir() if (f / s).exists()]
+        if not parts:
+            print(f"Segment {s} not found at {data}/*/{s}")
+            return
+        jsonql.run_pipes(file=parts, output=output / s)
+
+    ex = get_executor(
+        "regroup_tr",
+        output / "logs",
+        execution,
+        timeout_hour=0.5,
+        mem_gb=2,
+        cpus=2,
+        task_parallelism=parallelism,
+    )
+
+    segments = process_wet_file.cc_segments(dump)
+    ex(_regroup, segments)
 
 
 class LinearUnminifier(minify.Unminifier):
@@ -146,4 +196,4 @@ def unminify(
 if __name__ == "__main__":
     import func_argparse
 
-    func_argparse.main(transpose, unminify)
+    func_argparse.main(transpose, unminify, regroup_tr)
