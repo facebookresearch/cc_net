@@ -10,10 +10,10 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-import kenlm
-import numpy as np
-import pandas as pd
-import sentencepiece
+import kenlm  # type: ignore
+import numpy as np  # type: ignore
+import pandas as pd  # type: ignore
+import sentencepiece  # type: ignore
 
 from cc_net import jsonql, text_normalizer
 

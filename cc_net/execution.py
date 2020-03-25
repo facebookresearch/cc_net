@@ -6,8 +6,10 @@
 #
 
 import itertools
+import logging
 import multiprocessing
 import os
+import sys
 import warnings
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Optional, Sized
@@ -24,7 +26,7 @@ def get_executor(
     name: str,
     log_dir: Path,
     execution: str,
-    timeout_hour: int = 1,
+    timeout_hour: float = 1.0,
     mem_gb: int = 1,
     cpus: int = 1,
     task_parallelism: int = -1,
@@ -51,7 +53,7 @@ def get_executor(
 def get_submitit_executor(
     name: str,
     log_dir: Path,
-    timeout_hour: int,
+    timeout_hour: float,
     mem_gb: int,
     cpus: int,
     task_parallelism: int,
@@ -79,7 +81,7 @@ def get_submitit_executor(
 
     ex.update_parameters(
         name=name,
-        timeout_min=timeout_hour * 60,
+        timeout_min=int(timeout_hour * 60),
         mem_gb=mem_gb,
         cpus_per_task=cpus,
         array_parallelism=task_parallelism,
@@ -94,6 +96,8 @@ def get_submitit_executor(
 
         print(f"Submitting {f_name} in a job array ({approx_length} jobs)")
         jobs = ex.map_array(function, *args)
+        if not jobs:
+            return
         failed_jobs = []
         done = 0
         total = len(jobs)
@@ -122,10 +126,20 @@ def get_submitit_executor(
     return submit_and_wait
 
 
-def debug_executor(function: Callable[..., Optional[str]], *args: Iterable):
+def debug_executor(function: Callable[..., Optional[str]], *args: Iterable) -> None:
+    logging.getLogger().setLevel(logging.DEBUG)
     approx_length = _approx_length(*args)
     for i, x in enumerate(zip(*args)):
-        message = function(*x)
+        try:
+            message = function(*x)
+        except Exception:
+            import pdb
+            import traceback
+
+            traceback.print_exc()
+            print("")
+            pdb.post_mortem()
+            sys.exit(1)
         print(message, f"({i + 1} / {approx_length})")
 
 

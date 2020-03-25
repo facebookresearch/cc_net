@@ -9,7 +9,6 @@ import contextlib
 import gzip
 import io
 import logging
-import os
 import re
 import tempfile
 import time
@@ -19,7 +18,7 @@ from typing import ContextManager, Iterable, Iterator, List, Optional, Sequence
 from urllib.parse import urlparse
 
 import func_argparse
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup  # type: ignore
 
 from cc_net import jsonql
 
@@ -29,8 +28,15 @@ WET_URL_ROOT = "https://commoncrawl.s3.amazonaws.com"
 logger = logging.getLogger(__name__)
 
 
-def cc_segments_url(dump_id: str) -> str:
+def cc_wet_paths_url(dump_id: str) -> str:
     return "/".join([WET_URL_ROOT, "crawl-data", "CC-MAIN-" + dump_id, "wet.paths.gz"])
+
+
+def cc_segments(dump_id: str) -> List[str]:
+    wet_paths = cc_wet_paths_url(dump_id)
+    with jsonql.smart_open(wet_paths) as f:
+        segments = [segment.strip() for segment in f]
+    return segments
 
 
 def list_dumps() -> List[str]:
@@ -45,7 +51,7 @@ def list_dumps() -> List[str]:
 
 def ls():
     for dump in list_dumps():
-        print(dump, "->", cc_segments_url(dump))
+        print(dump, "->", cc_wet_paths_url(dump))
 
 
 def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
@@ -240,9 +246,7 @@ class CCShardReader(CCSegmentsReader):
         # Delaying the initialization allows to delay the looking up of the WET files
         if self._segments:
             return self._segments
-        segments_file = cc_segments_url(self.dump)
-        with jsonql.smart_open(segments_file) as f:
-            segments = [segment.strip() for segment in f]
+        segments = cc_segments(self.dump)
         n = len(segments)
         i_min = (self.shard * n) // self.num_shards
         i_max = ((self.shard + 1) * n) // self.num_shards

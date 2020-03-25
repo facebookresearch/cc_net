@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict
 
 import func_argparse
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup  # type: ignore
 
 from cc_net import jsonql, text_normalizer
 

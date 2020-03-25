@@ -21,7 +21,7 @@ from typing import Dict, Set
 from urllib.parse import urlparse
 
 import func_argparse
-from lxml import etree
+from lxml import etree  # type: ignore
 
 from cc_net import jsonql
 

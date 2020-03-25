@@ -139,7 +139,7 @@ class NaiveHashSet(dict, AbstractDedupHashSet):
 
 
 try:
-    import getpy as gp
+    import getpy as gp  # type: ignore
 
     class _FlatHashSet(gp.Dict, AbstractDedupHashSet):
         """C++ backed implementation of AbstractDedupHashSet.

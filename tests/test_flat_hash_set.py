@@ -50,7 +50,7 @@ def test_add_dup(hash_set_cls):
 
 @need_getpy
 def test_gp_dict():
-    import getpy as gp
+    import getpy as gp  # type: ignore
 
     h = gp.Dict(HASH_TYPE, np.uint8)
     h[np.arange(10, dtype=HASH_TYPE)] = np.zeros(10, dtype=np.uint8)

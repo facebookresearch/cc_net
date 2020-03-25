@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Set, Tuple
 
 import func_argparse
-from kenlm import Model as KenlmModel
-from sentencepiece import SentencePieceProcessor
+from kenlm import Model as KenlmModel  # type: ignore
+from sentencepiece import SentencePieceProcessor  # type: ignore
 
 import submitit
 from cc_net import dedup, jsonql, perplexity, text_normalizer
-from sentence_splitter import SentenceSplitter
+from sentence_splitter import SentenceSplitter  # type: ignore
 
 KENLM = Path("./bin/lmplz")
 KENLM_BUILD = Path("./bin/build_binary")

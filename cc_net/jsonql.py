@@ -46,7 +46,7 @@ from typing import (
 )
 
 import numpy as np
-import psutil
+import psutil  # type: ignore
 import requests
 from typing_extensions import Literal, Protocol
 
@@ -1308,6 +1308,8 @@ class BlockedGzipWriter(MultiFile):
         self.current_handle.close()
         self.current_handle = None
         index = np.array(self.index, dtype=np.uint64)
+        if len(index) <= 1:
+            return
         with open(str(self.filename) + ".index", "wb") as o:
             np.save(o, index)
 
