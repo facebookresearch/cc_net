@@ -12,7 +12,6 @@ Tools to search sentences in CC similar to sentences in another corpus.
 import functools
 import logging
 import math
-import os
 import subprocess
 from collections import Counter
 from pathlib import Path
@@ -57,14 +56,6 @@ def _dataset(dataset: Optional[Path], lang: str) -> Path:
         dataset
         or Path("/datasets01_101/common_crawl/020919") / f"{lang}_head_*.json.gz"
     )
-
-
-def _tmp_dir() -> Path:
-    job_id = os.environ.get("SLURM_JOB_ID")
-    if not job_id:
-        return Path("/tmp")
-
-    return Path("/scratch/slurm_tmpdir") / job_id
 
 
 class SentencePiece(jsonql.Transformer):
@@ -176,7 +167,7 @@ def train_lm(
         str(KENLM),
         f"--order={ngrams}",
         "--memory=8G",
-        f"--temp_prefix={_tmp_dir()}",
+        f"--temp_prefix={jsonql._tmp_dir()}",
         f"--text={tokenized}",
         f"--arpa={lm_text_file}",
         f"--vocab_estimate={vocab_size}",

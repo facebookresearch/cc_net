@@ -1,11 +1,10 @@
 import collections
 import json
-import re
 import time
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional
 
-from cc_net import jsonql, minify, process_wet_file
+from cc_net import jsonql, mine, minify, process_wet_file
 from cc_net.execution import get_executor
 
 
@@ -93,22 +92,16 @@ def _transpose_file(file: Path, output_dir: Path):
 
 
 def transpose(
-    dump: str, parallelism: int = 200, execution: str = "slurm", filter: str = None
+    files: List[Path],
+    output_dir: Path,
+    parallelism: int = 200,
+    execution: str = "slurm",
 ) -> None:
-
-    data = Path("data") / "regroup" / dump
-    assert data.exists(), f"Dump directory not found: {data}"
-    output = Path("data") / "transposed" / dump
-    output.mkdir(exist_ok=True, parents=True)
-
-    files = [f for f in data.iterdir() if f.name.endswith(".json.gz")]
-    if filter is not None:
-        files = [f for f in files if re.match(filter, f.name)]
-
-    print(f"Found {len(files)} files in {data}")
+    files = minify._expand_files(files)
+    output_dir.mkdir(exist_ok=True)
     ex = get_executor(
         "transpose",
-        output / "logs",
+        output_dir / "logs",
         execution,
         timeout_hour=10,
         mem_gb=64,
@@ -116,29 +109,36 @@ def transpose(
         task_parallelism=parallelism,
     )
 
-    tr_dirs = [output / f.stem.replace(".json", "") for f in files]
+    tr_dirs = [output_dir / f.stem.replace(".json", "") for f in files]
+    # skip existing directories
     files = [f for (f, o) in zip(files, tr_dirs) if not o.exists()]
     tr_dirs = [o for o in tr_dirs if not o.exists()]
     ex(_transpose_file, files, tr_dirs)
 
 
-def regroup_tr(dump: str, execution: str = "slurm", parallelism: int = 200):
-    data = Path("data") / "transposed" / dump
-    assert data.exists(), f"Dump directory not found: {data}"
-    output = Path("data") / "regroup_tr" / dump
-    output.mkdir(exist_ok=True, parents=True)
+def regroup_tr(
+    input_dir: Path,
+    output_dir: Path,
+    dump: str = None,
+    config: str = "base",
+    execution: str = "slurm",
+    parallelism: int = 200,
+):
+    output_dir.mkdir(exist_ok=True)
+    if dump is None:
+        dump = output_dir.name
 
     def _regroup(segment: str) -> None:
         s = segment.split("/")[-1].replace(".warc.wet.gz", ".json.gz")
-        parts = [f / s for f in data.iterdir() if (f / s).exists()]
+        parts = [f / s for f in input_dir.iterdir() if (f / s).exists()]
         if not parts:
-            print(f"Segment {s} not found at {data}/*/{s}")
+            print(f"Segment {s} not found at {input_dir}/*/{s}")
             return
-        jsonql.run_pipes(file=parts, output=output / s)
+        jsonql.run_pipes(file=parts, output=output_dir / s)
 
     ex = get_executor(
         "regroup_tr",
-        output / "logs",
+        output_dir / "logs",
         execution,
         timeout_hour=0.5,
         mem_gb=2,
@@ -146,7 +146,13 @@ def regroup_tr(dump: str, execution: str = "slurm", parallelism: int = 200):
         task_parallelism=parallelism,
     )
 
-    segments = process_wet_file.cc_segments(dump)
+    conf = mine.PREDEF_CONFIGS[config]
+    if conf.num_segments_per_shard > 0:
+        segments = [
+            seg for i in range(conf.num_shards) for seg in conf.get_cc_shard(i).segments
+        ]
+    else:
+        segments = process_wet_file.cc_segments(dump)
     ex(_regroup, segments)
 
 
@@ -160,10 +166,13 @@ class LinearUnminifier(minify.Unminifier):
     def fetch_metadata(self, segment: str) -> None:
         file_name = segment.split("/")[-1]
         assert file_name.endswith(".warc.wet.gz")
-        file_name = file_name.replace(".warc.wet.gz", ".json.gz")
-        with jsonql.smart_open(self.folder / file_name) as o:
-            metadata = jsonql.read_jsons(o)
-            self.metadata = {m["digest"]: m for m in metadata}
+        meta_file = self.folder / file_name.replace(".warc.wet.gz", ".json.gz")
+        assert (
+            meta_file.exists()
+        ), f"Couldn't found metadata file for segment {segment} at {file_name}"
+        k = minify.get_doc_key
+        with jsonql.smart_open(meta_file) as o:
+            self.metadata = {k(m["digest"]): m for m in jsonql.read_jsons(o)}
 
         self.segment = segment
         if segment in self._segments:
@@ -177,13 +186,23 @@ class LinearUnminifier(minify.Unminifier):
         return super().do(doc)
 
 
-def unminify(
-    folder: Path, dump: str, output_dir: Path, shard: int = 0, cache_dir: Path = None
+def unminify_shard(
+    folder: Path,
+    output: Path,
+    dump: str,
+    shard: int,
+    shard_config: mine.Config,
+    cache_dir: Path = None,
 ):
     unminifier = LinearUnminifier(folder)
-    output = output_dir / dump / f"all_{shard:04d}.json.gz"
     tmp = jsonql._tmp(output)
-    cc = process_wet_file.CCShardReader(dump, shard, 1600, cache_dir=cache_dir)
+    cc = process_wet_file.CCShardReader(
+        dump,
+        shard,
+        num_shards=shard_config.num_shards,
+        num_segments_per_shard=shard_config.num_segments_per_shard,
+        cache_dir=cache_dir,
+    )
 
     jsonql.run_pipes(unminifier, file=cc, output=tmp)
     tmp.rename(output)
@@ -191,6 +210,36 @@ def unminify(
     o_size = output.stat().st_size
     mb = 1024 ** 2
     return f"Unminified {output} ({f_size // mb:_}Mb -> {o_size // mb:_}Mb)"
+
+
+def unminify(
+    folder: Path,
+    output_dir: Path,
+    dump: str = None,
+    config: str = "base",
+    execution: str = "slurm",
+    parallelism: int = 200,
+):
+    ex = get_executor(
+        "unminify_tr",
+        output_dir / "logs",
+        execution,
+        timeout_hour=0.5,
+        mem_gb=2,
+        cpus=2,
+        task_parallelism=parallelism,
+    )
+    conf = mine.PREDEF_CONFIGS[config]
+    print(conf)
+    output_dir.mkdir(exist_ok=True)
+    dump_id = output_dir.name if dump is None else dump
+
+    def _unminify_shard(o: Path, shard: int):
+        return unminify_shard(folder, o, shard=shard, dump=dump_id, shard_config=conf)
+
+    shards = range(conf.num_shards)
+    outs = [output_dir / f"all_{shard:04d}.json.gz" for shard in shards]
+    ex(_unminify_shard, outs, shards)
 
 
 if __name__ == "__main__":

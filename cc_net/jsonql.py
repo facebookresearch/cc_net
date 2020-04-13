@@ -11,6 +11,7 @@ Manipulate files containing one json per line.
 import argparse
 import collections
 import contextlib
+import functools
 import glob
 import gzip
 import importlib
@@ -1145,17 +1146,33 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
     return r.content
 
 
-def open_remote_file(url: str, mode: str = "r") -> TextIO:
+def open_remote_file(
+    url: str, mode: str = "r", cache: Path = None
+) -> ContextManager[Iterable[str]]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
     """
     assert "r" in mode, f"Can't open {url} with mode {mode}."
-    content = io.BytesIO(request_get_content(url))
+    if cache and cache.exists():
+        return smart_open(cache, mode="r")
+
+    raw_bytes = request_get_content(url)
+    content = io.BytesIO(raw_bytes)
     if url.endswith(".gz"):
         f = gzip.open(content, mode="rt")
     else:
         f = io.TextIOWrapper(content)
-    return cast(TextIO, f)
+
+    if cache and not cache.exists():
+        # The file might have been created while downloading/writing.
+        tmp_cache = _tmp(cache)
+        tmp_cache.write_bytes(raw_bytes)
+        if not cache.exists():
+            tmp_cache.replace(cache)
+        else:
+            tmp_cache.unlink()
+
+    return f
 
 
 def sharded_file(file_pattern: Path, mode: str, max_size: str = "4G") -> MultiFile:
@@ -1335,9 +1352,25 @@ def mem_footprint_gb(pid=None):
 
 def _tmp(output: Path) -> Path:
     suffix = "".join(output.suffixes)
+    suffix = ".tmp" + suffix
     prefix = output.name[: -len(suffix)]
     _, tmp_path = tempfile.mkstemp(dir=output.parent, prefix=prefix, suffix=suffix)
     return Path(tmp_path)
+
+
+@functools.lru_cache()
+def _tmp_dir() -> Path:
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id:
+        return Path("/scratch/slurm_tmpdir") / job_id
+
+    checkpoint = Path("/checkpoint") / os.environ.get("USER", "")
+    if checkpoint.exists():
+        tmp = checkpoint / "tmp"
+        tmp.mkdir(exist_ok=True)
+        return tmp
+
+    return Path("/tmp")
 
 
 if __name__ == "__main__":

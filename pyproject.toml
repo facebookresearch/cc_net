@@ -16,3 +16,8 @@ skip = ["third_party", "data"]
 
 [mypy]
 python_version = 3.7
+
+[mypy-numpy]
+ignore_missing_imports = true
+[mypy-pytest]
+ignore_missing_imports = true

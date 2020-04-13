@@ -175,8 +175,6 @@ class Unminifier(jsonql.Transformer):
         summ = super().summary()
         mem = mem_footprint_gb()
         len_cache = len(self.metadata)
-        if len_cache > 2000:
-            breakpoint()
         summ.append(
             f"Read {self.read_doc:_}, stocking {len_cache:_} doc in {mem:.1f}g."
         )

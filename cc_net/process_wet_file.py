@@ -6,8 +6,7 @@
 #
 
 import contextlib
-import gzip
-import io
+import functools
 import logging
 import re
 import tempfile
@@ -32,11 +31,13 @@ def cc_wet_paths_url(dump_id: str) -> str:
     return "/".join([WET_URL_ROOT, "crawl-data", "CC-MAIN-" + dump_id, "wet.paths.gz"])
 
 
-def cc_segments(dump_id: str) -> List[str]:
+@functools.lru_cache()
+def cc_segments(dump_id: str, cache_dir: Path = None) -> List[str]:
     wet_paths = cc_wet_paths_url(dump_id)
-    with jsonql.smart_open(wet_paths) as f:
-        segments = [segment.strip() for segment in f]
-    return segments
+    cache_dir = cache_dir or jsonql._tmp_dir()
+    wet_paths_cache = cache_dir / f"wet_{dump_id}.paths.gz"
+    with jsonql.open_remote_file(wet_paths, cache=wet_paths_cache) as f:
+        return [segment.strip() for segment in f]
 
 
 def list_dumps() -> List[str]:
@@ -176,25 +177,13 @@ class CCSegmentsReader(Iterable[dict]):
 
     def open_segment(self, segment: str) -> ContextManager[Iterable[str]]:
         url = self.segment_url(segment)
-        if not self.cache_dir:
-            self.retrieved_segments += 1
-            return jsonql.open_remote_file(url)
-
-        file = self.cache_dir / segment.split("/")[-1]
-        if not file.exists():
+        file: Optional[Path] = None
+        if self.cache_dir:
+            file = self.cache_dir / segment.split("/")[-1]
+        if not file or not file.exists():
             self.retrieved_segments += 1
 
-            content = jsonql.request_get_content(url)
-            tmp = _tmp(dir=self.cache_dir, prefix=file.name, suffix=".gz")
-            tmp.write_bytes(content)
-            # The file might have been created by another job while downloading.
-            if not file.exists():
-                tmp.replace(file)
-            else:
-                tmp.unlink()
-            return gzip.open(io.BytesIO(content), mode="rt")
-
-        return jsonql.smart_open(file)
+        return jsonql.open_remote_file(url, cache=file)
 
     def __iter__(self) -> Iterator[dict]:
         n = len(self.segments)
@@ -246,7 +235,7 @@ class CCShardReader(CCSegmentsReader):
         # Delaying the initialization allows to delay the looking up of the WET files
         if self._segments:
             return self._segments
-        segments = cc_segments(self.dump)
+        segments = cc_segments(self.dump, self.cache_dir)
         n = len(segments)
         i_min = (self.shard * n) // self.num_shards
         i_max = ((self.shard + 1) * n) // self.num_shards

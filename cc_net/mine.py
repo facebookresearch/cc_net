@@ -80,6 +80,7 @@ class Config(NamedTuple):
     task_parallelism: int = 500
     pipeline: Sequence[str] = []
     experiments: Sequence[str] = []
+    cache_dir: Optional[Path] = None
 
     def get_executor(
         self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1
@@ -96,12 +97,19 @@ class Config(NamedTuple):
         )
 
     def get_cc_shard(self, shard: int) -> process_wet_file.CCShardReader:
+        dump_cache: Optional[Path] = None
+        if self.cache_dir:
+            self.cache_dir.mkdir(exist_ok=True)
+            dump_cache = self.cache_dir / self.dump
+            dump_cache.mkdir(exist_ok=True)
+
         return process_wet_file.CCShardReader(
             self.dump,
             shard=shard,
             num_shards=self.num_shards,
             num_segments_per_shard=self.num_segments_per_shard,
             min_len=self.min_len,
+            cache_dir=dump_cache
         )
 
     @classmethod
@@ -149,6 +157,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
     lang_whitelist=["de", "it", "fr"],
     target_size="32M",
     cleanup_after_regroup=False,
+    cache_dir=Path("test_data/wet_cache")
 )
 
 PREDEF_CONFIGS = {
@@ -509,7 +518,7 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
     else:
         mine(conf)
 
-    if config == PREDEF_CONFIGS["test"]:
+    if "test" in config_base:
         _validate_test(conf)
 
 
