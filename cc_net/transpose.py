@@ -1,8 +1,9 @@
 import collections
 import json
 import time
+import urllib
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple, Optional, Union
 
 from cc_net import jsonql, mine, minify, process_wet_file
 from cc_net.execution import get_executor
@@ -157,22 +158,46 @@ def regroup_tr(
 
 
 class LinearUnminifier(minify.Unminifier):
-    def __init__(self, folder: Path):
+    def __init__(self, folder: Union[Path, str]):
         super().__init__()
+        if isinstance(folder, str):
+            # detect path passed as string
+            if urllib.parse.urlparse(folder).scheme == "":
+                folder = Path(folder)
+                assert folder.exists(), f"Metadata folder not found: {folder}"
+
         self.folder = folder
         self.segment: str = ""
         self.segments_read_twice = 0
 
-    def fetch_metadata(self, segment: str) -> None:
+    def meta_file(self, segment: str) -> str:
         file_name = segment.split("/")[-1]
         assert file_name.endswith(".warc.wet.gz")
+        if isinstance(self.folder, str):
+            return urllib.parse.urljoin(
+                self.folder, file_name.replace(".warc.wet.gz", ".json.gz")
+            )
         meta_file = self.folder / file_name.replace(".warc.wet.gz", ".json.gz")
         assert (
             meta_file.exists()
         ), f"Couldn't found metadata file for segment {segment} at {file_name}"
+        return str(meta_file)
+
+    def fetch_metadata(self, segment: str) -> None:
+        meta_file = self.meta_file(segment)
         k = minify.get_doc_key
         with jsonql.smart_open(meta_file) as o:
-            self.metadata = {k(m["digest"]): m for m in jsonql.read_jsons(o)}
+            self.metadata = {}
+            collision = 0
+            for m in jsonql.read_jsons(o):
+                key = k(m["digest"])
+                if key in self.metadata:
+                    collision += 1
+                self.metadata[key] = m
+
+            self.log(f"Loaded {len(self.metadata)} metadatas from {meta_file}")
+            if collision > 0:
+                self._logger.warning(f"Found {collision} collisions !")
 
         self.segment = segment
         if segment in self._segments:

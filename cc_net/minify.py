@@ -140,8 +140,8 @@ class Unminifier(jsonql.Transformer):
         metadata = self.metadata.pop(key)
         return self.clean(metadata, doc)
 
-    def clean(self, doc: dict, full_doc: dict) -> Optional[dict]:
-        hashes = set(_b2i(h) for h in decode_hashes(doc.pop("hashes")))
+    def clean(self, metadata: dict, full_doc: dict) -> Optional[dict]:
+        hashes = set(_b2i(h) for h in decode_hashes(metadata.pop("hashes")))
         content = full_doc["raw_content"]
         cleaned = []
         processed_par = 0
@@ -161,15 +161,14 @@ class Unminifier(jsonql.Transformer):
             self.missed_doc += 1
             return None
 
-        doc["raw_content"] = "\n".join(cleaned)
-        doc["title"] = full_doc["title"]
-        doc["date_download"] = full_doc["date_download"]
-        doc["original_length"] = full_doc["length"]
-        doc["original_nlines"] = full_doc["nlines"]
-        doc["length"] = len(doc["raw_content"])
-        doc["nlines"] = len(cleaned)
-        doc["source_domain"] = urlparse(doc["url"]).netloc
-        return doc
+        full_doc["raw_content"] = "\n".join(cleaned)
+        full_doc["original_nlines"] = full_doc["nlines"]
+        full_doc["original_length"] = full_doc["length"]
+        full_doc["nlines"] = len(cleaned)
+        full_doc["length"] = len(full_doc["raw_content"])
+        for key, value in metadata.items():
+            full_doc[key] = value
+        return full_doc
 
     def summary(self) -> List[str]:
         summ = super().summary()
@@ -257,6 +256,7 @@ def unminify(
     outputs = [output_dir / str(f).split("/")[-1] for f in files]
     if cache_dir is None:
         cache_dir = output_dir / "wet_cache"
+        cache_dir.mkdir(exist_ok=True)
     if str(cache_dir) == "none":
         cache_dir = None
     files = [f for f, o in zip(files, outputs) if not o.exists()]

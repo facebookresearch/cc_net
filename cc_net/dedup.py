@@ -319,9 +319,9 @@ def finalize_doc(doc, field, hashes=None):
     lines = content.split("\n")
     n_chars = len(content)
     if "original_nlines" not in doc:
-        doc["original_nlines"] = len(lines)
+        doc["original_nlines"] = doc.get("nlines", len(lines))
     if "original_length" not in doc:
-        doc["original_length"] = n_chars
+        doc["original_length"] = doc.get("length", n_chars)
     if hashes is None:
         hashes = doc.pop(field + "_hash")
 

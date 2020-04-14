@@ -20,7 +20,7 @@ from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import func_argparse
 
@@ -29,6 +29,7 @@ from cc_net import dedup, execution, jsonql, perplexity, process_wet_file
 from cc_net import regroup as regroup_module
 from cc_net import split_by_lang
 from cc_net.execution import Executor
+import json
 
 # Constant
 CUTOFF_CSV = Path(__file__).parent / "data" / "cutoff.csv"
@@ -66,6 +67,7 @@ class Config(NamedTuple):
     execution: str = "slurm"
     num_shards: int = 1600
     num_segments_per_shard: int = -1
+    metadata: Optional[str] = None
     min_len: int = 300
     hash_in_mem: int = 50
     lang_whitelist: Sequence[str] = []
@@ -109,7 +111,7 @@ class Config(NamedTuple):
             num_shards=self.num_shards,
             num_segments_per_shard=self.num_segments_per_shard,
             min_len=self.min_len,
-            cache_dir=dump_cache
+            cache_dir=dump_cache,
         )
 
     @classmethod
@@ -157,7 +159,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
     lang_whitelist=["de", "it", "fr"],
     target_size="32M",
     cleanup_after_regroup=False,
-    cache_dir=Path("test_data/wet_cache")
+    cache_dir=Path("test_data/wet_cache"),
 )
 
 PREDEF_CONFIGS = {
@@ -234,12 +236,13 @@ HASHES_IN_MEM = [0, 1, 2, 5, 10, 20, 50, 100, 200, 400]
 
 def mine(conf: Config) -> List[Path]:
     """Remove dups, run LID and LMs, and split by lang and quality."""
-    mined_dir = conf.output_dir / "mined" / conf.dump
     if conf.will_split:
         # Give a directories when splitting
+        mined_dir = conf.output_dir / "mined_split" / conf.dump
         outputs = [mined_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
     else:
         # Files otherwise
+        mined_dir = conf.output_dir / "mined" / conf.dump
         outputs = [
             mined_dir / f"{shard:04d}.json.gz" for shard in range(conf.num_shards)
         ]
@@ -358,21 +361,69 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     return f"Mined {output}"
 
 
-def regroup(conf: Config) -> Path:
-    """Reshards each language/quality after 'mine'."""
-    regroup_dir = conf.output_dir / "regroup" / conf.dump
-    mined_dir = conf.output_dir / "mined" / conf.dump
-    all_files = list(mined_dir.glob("????/*.json.gz"))
+def reproduce(conf: Config) -> List[Path]:
 
-    if regroup_dir.exists() and len(all_files) == 0:
-        print(f"No files found in {mined_dir} for regroup. Exiting.")
-        return regroup_dir
+    if conf.will_split:
+        # Give a directories when splitting
+        reproduce_dir = conf.output_dir / "reproduce_split" / conf.dump
+        outputs = [reproduce_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
+    else:
+        # Files otherwise
+        reproduce_dir = conf.output_dir / "reproduce" / conf.dump
+        outputs = [
+            reproduce_dir / f"{shard:04d}.json.gz" for shard in range(conf.num_shards)
+        ]
+    reproduce_dir.mkdir(parents=True, exist_ok=True)
+    missing_outputs = [(shard, o) for shard, o in enumerate(outputs) if not o.exists()]
+    if not missing_outputs:
+        return outputs
+
+    ex = conf.get_executor("reproduce", timeout_hour=2, mem_gb=2, cpus=2)
+    ex(_reproduce_shard, repeat(conf), *_transpose(missing_outputs))
+    return outputs
+
+
+def _reproduce_shard(conf: Config, shard: int, output: Path) -> str:
+    from cc_net import transpose
+
+    assert conf.metadata is not None
+    tmp_output = tmp(output)
+    cc = process_wet_file.CCShardReader(
+        conf.dump,
+        shard,
+        num_shards=conf.num_shards,
+        num_segments_per_shard=conf.num_segments_per_shard,
+        cache_dir=conf.cache_dir,
+    )
+
+    unminifier = transpose.LinearUnminifier(conf.metadata + "/" + conf.dump)
+    pipeline: List[jsonql.Transformer] = [unminifier]
+
+    if conf.will_split:
+        pattern = str(tmp_output / "{language}_{bucket}.json.gz")
+        pipeline.append(jsonql.split(pattern=str(pattern), mkdir=True))
+
+    jsonql.run_pipes(
+        *pipeline, file=cc, output=tmp_output if not conf.will_split else None
+    )
+    tmp_output.rename(output)
+    return f"Unminified {output}"
+
+
+def regroup(
+    conf: Config, before: Callable[[Config], List[Path]], regroup_dir: Path
+) -> Path:
+    """Reshards each language/quality after 'mine'."""
+    mined_dir = regroup_dir.parent / (regroup_dir.name + "_split")
+    if mined_dir:
+        all_files = list(mined_dir.glob("????/*.json.gz"))
+        if regroup_dir.exists() and len(all_files) == 0:
+            print(f"No files found in {mined_dir} for regroup. Exiting.")
+            return regroup_dir
 
     # check that mining is over.
-    mine(conf)
-    if len(all_files) == 0:
-        all_files = list(mined_dir.glob("????/*.json.gz"))
-        assert all_files, f"No files found inside mined dir: {mined_dir}"
+    all_files = [f for d in before(conf) for f in d.glob("*.json.gz")]
+    assert all_files, f"No files found inside mined dir: {mined_dir}"
 
     splits: Dict[str, List[Path]] = defaultdict(list)
     for f in all_files:
@@ -434,23 +485,28 @@ def _regroup(conf: Config, inputs: List[Path], output: Path) -> str:
     return f"Regrouped {output}"
 
 
-def _validate_test(conf: Config, generate: bool = False):
+def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
     stats: Dict[str, dict] = {}
-    for file in sorted((conf.output_dir / "regroup" / conf.dump).glob("*.json.gz")):
-        fname = f"regroup/{conf.dump}/{file.name}"
+    for file in sorted(output_dir.glob("*.json.gz")):
+        fname = "/".join((file.parent.name, file.name))
         with jsonql.smart_open(file) as lines:
-            # The order of documents is not guaranteed inside a shard.
-            content = "\n".join(sorted(lines))
+            # The order of documents is not guaranteed inside a shard,
+            lines = sorted(lines)
+            content = "\n".join(lines)
             size = len(content)
             checksum = hashlib.sha1(bytes(content, encoding="utf-8")).hexdigest()
+            # first_document = json.loads(lines[0])
         stats[fname] = {"size": size, "checksum": checksum}
 
+    def dump(x):
+        return json.dumps(x, indent=2, ensure_ascii=False)
+
     print("*** Stats ***")
-    print(json.dumps(stats, indent=2))
+    stats_raw = dump(stats)
     stats_file = Path(__file__).parent / "data" / "test_stats.json"
     if generate:
         print("Saving stats to", stats_file)
-        stats_file.write_text(json.dumps(stats, indent=2))
+        stats_file.write_text(stats_raw)
         return
 
     expected_stats: Dict[str, dict] = {}
@@ -461,8 +517,9 @@ def _validate_test(conf: Config, generate: bool = False):
         print("Everything looks good !")
         return
 
+    stats_file.with_suffix(".actual.json").write_text(stats_raw)
     print("*** Expected Stats ***")
-    print(json.dumps(expected_stats, indent=2))
+    print(dump(expected_stats))
 
     print("*** Diff ***")
     for fname in sorted(expected_stats.keys()):
@@ -482,7 +539,6 @@ def _validate_test(conf: Config, generate: bool = False):
                 ", checksum",
                 stats[fname]["checksum"],
             )
-
 
 def get_main_parser() -> ArgumentParser:
     # Generates the 'main' parser by patching a 'Config' parser
@@ -512,14 +568,23 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
     conf = conf._replace(**{k: v for (k, v) in config_as_dict.items() if v is not None})
     print("Will run mine.py with the following config:", conf)
 
+    # Decide if we need to mine or if we have metadata available
+    if conf.metadata:
+        print(f"Will use pre-computed metadata from {conf.metadata}")
+        first_stage: Callable[[Config], Any] = reproduce
+        regroup_dir = conf.output_dir / "reproduce" / conf.dump
+    else:
+        first_stage = mine
+        regroup_dir = conf.output_dir / "mined" / conf.dump
+
     # Only regroup if we split the shards.
     if conf.will_split:
-        regroup(conf)
+        regroup(conf, first_stage, regroup_dir)
     else:
-        mine(conf)
+        first_stage(conf)
 
     if "test" in config_base:
-        _validate_test(conf)
+        _validate_test(conf, regroup_dir)
 
 
 if __name__ == "__main__":

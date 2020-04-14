@@ -27,6 +27,9 @@ ifneq ($(servers), 0)
 	DISTRIBUTE=xargs -L1 -P $(servers) srun -t 240 --mem 5000
 endif
 
+# PRIVATE
+_SEGMENT=2019-09/CC-MAIN-20190215183319-20190215205319-00000
+
 help:
 	# Show help
 	grep -i -A1 '^[a-z0-9_]*:' Makefile
@@ -173,9 +176,48 @@ bin/spm_train: third_party/sentencepiece
 test:
 	python -m cc_net mine --config test
 	mkdir -p test_data/mini
-	python -m cc_net.minify minify -f test_data/regroup/2019-09 -o test_data/mini/2019-09
+	python -m cc_net.minify minify -f test_data/mined/2019-09 -o test_data/mini/2019-09
 	mkdir -p test_data/reproduce
 	python cc_net/minify.py unminify -f test_data/mini/2019-09 -o test_data/reproduce/2019-09
 	diff \
-		<(zcat test_data/regroup/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content) \
+		<(zcat test_data/mined/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content) \
 		<(zcat test_data/reproduce/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content)
+
+test_data/regroup_tr/$(_SEGMENT).json.gz:
+	mkdir -p test_data/transpose
+	python cc_net/transpose.py transpose -f test_data/mined/2019-09 -o test_data/transpose/2019-09 \
+		--ex debug
+	mkdir -p test_data/regroup_tr
+	python cc_net/transpose.py regroup_tr -i test_data/transpose/2019-09 -o test_data/regroup_tr/2019-09 \
+		--ex local --conf test
+	mkdir -p test_data/reproduce_tr
+	python cc_net/transpose.py unminify -f test_data/regroup_tr/2019-09 -o test_data/reproduce_tr/2019-09 \
+		--ex debug --conf test
+
+test_transpose: test_data/regroup_tr/$(_SEGMENT).json.gz
+	diff -y -W60 \
+		<(zcat test_data/mined/2019-09/*.json.gz | jq -r .language | sort | uniq -c ) \
+		<(zcat test_data/reproduce_tr/2019-09/*.json.gz | jq -r .language | sort | uniq -c )
+	diff -y -w60 \
+		<(zcat test_data/mined/2019-09/*.json.gz | jq -r .raw_content | wc) \
+		<(zcat test_data/reproduce_tr/2019-09/*.json.gz | jq -r .raw_content | wc)
+	diff \
+		<(zcat test_data/mined/2019-09/*.json.gz | jq -r .url | sort) \
+		<(zcat test_data/reproduce_tr/2019-09/*.json.gz | jq -r .url | sort) \
+		| head
+	# zcat test_data/reproduce_tr/2019-09/*.json.gz | sort | head -2 | jq -r .raw_content
+
+test_with_metadata: test_data/regroup_tr/$(_SEGMENT).json.gz
+	python -m cc_net mine --config test --metadata test_data/regroup_tr
+
+	diff -y -W60 \
+		<(zcat test_data/mined/2019-09/*.json.gz | jq -r .language | sort | uniq -c ) \
+		<(zcat test_data/reproduce/2019-09/*.json.gz | jq -r .language | sort | uniq -c )
+	diff -y -w60 \
+		<(zcat test_data/mined/2019-09/*.json.gz | jq -r .raw_content | wc) \
+		<(zcat test_data/reproduce/2019-09/*.json.gz | jq -r .raw_content | wc)
+	diff \
+		<(zcat test_data/mined/2019-09/*.json.gz | jq -r .url | sort) \
+		<(zcat test_data/reproduce/2019-09/*.json.gz | jq -r .url | sort) \
+		| head
+

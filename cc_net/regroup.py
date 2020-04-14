@@ -40,7 +40,9 @@ def reshard(
     logging.info(f"Resharding {inputs} to {tmp}, will move later to {output}")
     jsonql.run_pipes(file=inputs, output=tmp)
     tmp.replace(output)
-    get_index(tmp).replace(get_index(output))
+    tmp_index = get_index(tmp)
+    if tmp_index.exists():
+        tmp_index.replace(get_index(output))
 
     if not (free_original or rm_original):
         return output

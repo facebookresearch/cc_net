@@ -1121,6 +1121,10 @@ class MultiFile(SimpleIO):
         self.current_handle = None
 
 
+# not sure it helps since connections are reseted anyway.
+_session = functools.lru_cache()(requests.Session)
+
+
 def request_get_content(url: str, n_retry: int = 3) -> bytes:
     """Retrieve the binary content at url.
 
@@ -1129,7 +1133,7 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
     logging.info(f"Starting download of {url}")
     for i in range(1, n_retry + 1):
         try:
-            r = requests.get(url)
+            r = _session().get(url)
             r.raise_for_status()
             break
         except requests.exceptions.RequestException as e:
@@ -1147,7 +1151,7 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
 
 
 def open_remote_file(
-    url: str, mode: str = "r", cache: Path = None
+    url: str, mode: str = "r", cache: Path = None,
 ) -> ContextManager[Iterable[str]]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
