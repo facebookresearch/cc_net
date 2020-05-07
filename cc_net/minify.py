@@ -68,7 +68,7 @@ def encode_line_ids(line_ids: Iterable[int]) -> str:
 
 def decode_line_ids(compact: str) -> List[int]:
     ids_bytes = bytearray(base64.b64decode(compact))
-    return np.ndarray(dtype='<i2', buffer=ids_bytes)
+    return np.ndarray(dtype="<i2", buffer=ids_bytes)
 
 
 def get_doc_key(digest: str) -> int:

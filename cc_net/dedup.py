@@ -18,7 +18,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import List, Optional, Set, Union
+from typing import Iterable, List, Optional, Set, Union
 
 import numpy as np
 
@@ -128,8 +128,8 @@ def merge_shard(hash_files, output):
 def _dump_sentence_hashes(source: Path, output: Path, field: str):
     treated = 0
     started = time.time()
-    with jsonql.smart_open(source, "r") as f, open(output, "wb") as o:
-        for doc in jsonql.read_jsons(f):
+    with open(output, "wb") as o:
+        for doc in jsonql.read_jsons(source):
             content = doc.get(field)
             if not content:
                 continue
@@ -196,7 +196,7 @@ def remove_duplicates_sharded(
     assert len(hashes_files) > 0, f"no hashes files found in: {hashes_dir}"
 
     if len(hashes_files) <= group_hashes:
-        log("All hashes can be done in one pass, using DuplicatesRemover on", files)
+        log(f"All hashes can be done in one pass, using DuplicatesRemover on {files}")
         rm_dups = DuplicatesRemover(field, hashes_files)
         rm_dups._prepare()
         run_par(
@@ -205,7 +205,7 @@ def remove_duplicates_sharded(
         )
         return
 
-    log("Starting deduplicate_sharded on", files)
+    log(f"Starting deduplicate_sharded on {files}.")
     tmp_directory = tempfile.TemporaryDirectory(dir=str(tmp_dir) if tmp_dir else None)
 
     def tmp_files(i):
@@ -370,10 +370,13 @@ class DuplicatesRemover(jsonql.Transformer):
     # The hashes can't be pickled so they will have to be read back from disk.
     warn_when_pickling = True
 
-    def __init__(self, field: str, hashes_files: List[Path]):
+    def __init__(self, field: str, hashes_files: List[Path], collect: bool=False):
+        """
+        Remove duplicates
+        """
         super().__init__()
         self.field = field
-        self.hash_field = field + "_hash"
+        self.collect = collect
 
         self.hashes_files = hashes_files
         self.duplicates: Optional[AbstractDedupHashSet] = None
@@ -397,25 +400,21 @@ class DuplicatesRemover(jsonql.Transformer):
 
         delay = time.time() - start
         self.log(
-            f"Loaded {len(self.duplicates)} hashes from {len(self.hashes_files)} files. ({mem_footprint_gb()}GB total, took {delay / 60:.1}m)"
+            f"Loaded {len(self.duplicates):_d} hashes from {len(self.hashes_files)} files. ({mem_footprint_gb():.1f}GB total, took {delay / 60:.1}m)"
         )
 
     def do(self, doc: dict) -> Optional[dict]:
-        doc_hashes = doc.get(self.hash_field)
-        if doc_hashes:
-            doc_hashes = np.array(doc_hashes, dtype=HASH_TYPE)
-        else:
-            content = doc.get(self.field)
-            if not content:
-                return None
-            doc_hashes = compute_hashes(content)
+        content = doc.get(self.field)
+        if not content:
+            return None
+        doc_hashes = compute_hashes(content)
 
         assert self.duplicates is not None
-        keep = self.duplicates[doc_hashes] < 1
+        seen = self.duplicates.add(doc_hashes) if self.collect else self.duplicates[doc_hashes]
+        keep = seen < True
         kept = keep.sum()
         if kept == 0:
             return None
-
         doc_hashes = doc_hashes * keep
         self.n_lines += keep.size
         self.n_lines_kept += kept
@@ -439,3 +438,37 @@ class DuplicatesRemover(jsonql.Transformer):
         selectivity = n_chars_kept / n_chars if n_chars else 0
         summ.append(f"Kept {n_chars_kept} chars out of {n_chars} ({selectivity:.1%}).")
         return summ
+
+
+def deduplicate(
+    file: jsonql.ReadableFileLike, field: str = "raw_content"
+) -> Iterable[dict]:
+    """Remove duplicates of the given file (but keep the first occurence)."""
+    dup_remover = DuplicatesRemover(field, [], collect=True)
+    with dup_remover, jsonql.smart_open(file) as f:
+        for doc in jsonql.read_jsons(f):
+            yield dup_remover(doc)
+
+
+def deduplicate_two_pass(
+    file: jsonql.FileDescriptor, field: str = "raw_content"
+) -> Iterable[dict]:
+    """Remove duplicates of the given file (even removing the first occurence).
+
+    This is what is done in the paper, and in mine.py
+    """
+    try:
+        if isinstance(file, Path):
+            hash_file: Path = file.with_suffix(".bin")
+        else:
+            hash_file = jsonql._tmp(Path("hashes.bin"))
+        jsonql.run_pipes(
+            jsonql.JsonReader(), HashesCollector(field, output=hash_file), file=file
+        )
+        dup_remover = DuplicatesRemover(field, [hash_file])
+        with dup_remover, jsonql.smart_open(file) as f:
+            for doc in jsonql.read_jsons(f):
+                yield dup_remover(doc)
+    finally:
+        if hash_file.exists():
+            hash_file.unlink()

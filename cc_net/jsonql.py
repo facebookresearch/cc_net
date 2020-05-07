@@ -63,7 +63,7 @@ FilterFn = Callable[[dict], bool]
 FileDescriptor = Union[Path, List[Path], str]
 OwnedFile = Union["SimpleIO", None]
 WritableFileLike = Union[FileDescriptor, OwnedFile]
-ReadableFileLike = Union[Iterable[str], Iterable[dict], "SimpleIO"]
+ReadableFileLike = Union[Iterable[str], Iterable[dict], "SimpleIO", FileDescriptor]
 FileLike = Union[WritableFileLike, ReadableFileLike]
 
 
@@ -287,10 +287,13 @@ class Transformer:
             self.log(line)
         self.__last_log = time.time()
 
-    def map(self, source):
+    def map(self, source: Iterable) -> Iterator:
         if self.ready:
             for x in source:
                 yield self(x)
+            # since we have been prepared by caller,
+            # caller is also responsible for calling `close`.
+            return
         else:
             with self:
                 for x in source:
@@ -400,6 +403,9 @@ def run_pipes(
     processes: int = 0,
     chunksize: int = 10_000,
 ):
+    expect_json = len(fns) and isinstance(fns[0], Transformer) and fns[0].expect_json
+    if expect_json:
+        fns = (JsonReader(),) + fns
     transformers = []
     for t in fns:
         if not isinstance(t, Transformer):
@@ -408,9 +414,6 @@ def run_pipes(
             break
         transformers.append(t)
     pipes = fns[len(transformers) :]
-
-    if transformers and transformers[0].expect_json:
-        transformers.insert(0, JsonReader())
 
     log = logging.getLogger(__name__).info
 
@@ -482,7 +485,12 @@ def json_stdin() -> Iterable[dict]:
     return JsonReader().map(sys.stdin)
 
 
-def read_jsons(lines: Iterable[str], strict=False) -> Iterator[dict]:
+def read_jsons(file: Union[FileDescriptor, Iterable[str], Iterable[dict]], strict=False) -> Iterator[dict]:
+    with smart_open(file) as f:
+        yield from _read_jsons(f)
+
+
+def _read_jsons(lines: Union[Iterable[str], Iterable[dict]], strict=False) -> Iterator[dict]:
     reader = JsonReader(strict=strict)
 
     for line in reader.map(lines):
@@ -1199,18 +1207,18 @@ def sharded_file(file_pattern: Path, mode: str, max_size: str = "4G") -> MultiFi
 
 
 class SplitFile:
-    def __init__(self, filename, chunk, n_chunks, mode="r"):
+    def __init__(self, filename: Path, chunk: int, n_chunks: int, mode: str = "r"):
         assert mode == "r"
         size = os.path.getsize(filename)
         self.handle = open(filename, mode)
         start = chunk * size // n_chunks
-        self.end = (chunk + 1) * size // n_chunks
+        self.end: int = (chunk + 1) * size // n_chunks
 
         if start > 0:
             self.handle.seek(start - 1)
             # Skip incomplete line. This avoid crashing when reading eg the middle
             # of a unicode char. `self.handle.buffer` is a binary file reader.
-            self.handle.buffer.readline()
+            self.handle.buffer.readline()  # type: ignore
 
     def __enter__(self):
         return self

@@ -152,7 +152,7 @@ class Config(NamedTuple):
             languages = [l for l in languages if l not in self.lang_blacklist]
         return languages
 
-    def _get_dir(self, name: str, regroup: bool =False) -> Path:
+    def _get_dir(self, name: str, regroup: bool = False) -> Path:
         if self.will_split and not regroup:
             return self.output_dir / f"{name}_split" / self.dump
         return self.output_dir / name / self.dump
@@ -439,9 +439,7 @@ def _reproduce_shard(conf: Config, shard: int, output: Path) -> str:
     return f"Unminified {output}"
 
 
-def regroup(
-    conf: Config, before: Callable[[Config], List[Path]], dirname: str
-) -> Path:
+def regroup(conf: Config, before: Callable[[Config], List[Path]], dirname: str) -> Path:
     """Reshards each language/quality after 'mine'."""
     mined_dir = conf.output_dir / f"{dirname}_split" / conf.dump
     regroup_dir = conf.output_dir / dirname / conf.dump
@@ -516,9 +514,7 @@ def _regroup(conf: Config, inputs: List[Path], output: Path) -> str:
     return f"Regrouped {output}"
 
 
-def move_segments(
-    conf: Config, first_stage: Callable, dirname: str
-) -> Path:
+def move_segments(conf: Config, first_stage: Callable, dirname: str) -> Path:
     """Reshards each language/quality after 'mine'."""
     mined_dir = conf.output_dir / f"{dirname}_split" / conf.dump
     regroup_dir = conf.output_dir / dirname / conf.dump
