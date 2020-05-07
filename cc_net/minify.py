@@ -10,7 +10,6 @@ import hashlib
 import itertools
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Union
-from urllib.parse import urlparse
 
 import numpy as np
 
@@ -27,9 +26,8 @@ COMPUTED_FIELDS = ["cc_segment", "language", "language_score", "bucket", "perple
 CC_NET_ROOT_FOLDER = "https://dl.fbaipublicfiles.com/cc_net/"
 DATA = Path(__file__).parent.parent / "data"
 
+
 # This is similar to dedup methods but with use 32 bits hashes.
-
-
 def _b2i(b: bytes) -> int:
     return np.frombuffer(b[:HASH_SIZE], dtype=HASH_TYPE, count=1, offset=0).item(0)
 
@@ -63,6 +61,16 @@ def decode_hashes(compact: str) -> List[bytes]:
     return res
 
 
+def encode_line_ids(line_ids: Iterable[int]) -> str:
+    arr = np.array(line_ids, dtype="<u2")
+    return base64.b64encode(arr.tobytes()).decode("ascii")
+
+
+def decode_line_ids(compact: str) -> List[int]:
+    ids_bytes = bytearray(base64.b64decode(compact))
+    return np.ndarray(dtype='<i2', buffer=ids_bytes)
+
+
 def get_doc_key(digest: str) -> int:
     assert digest.startswith("sha1:")
     h = base64.b32decode(digest[5:])
@@ -77,20 +85,14 @@ class Minifier(jsonql.Transformer):
         self.collisions = 0
 
     def do(self, doc: dict) -> Optional[dict]:
-        content = doc.pop("raw_content", None)
-        if not content:
-            return None
-        hashes = get_hashes(content.split("\n"))
-        hashes_set = set(hashes)
-        self.collisions += len(hashes) - len(hashes_set)
-
+        line_ids: List[int] = doc.pop("line_ids")
         fields = self.fields
         keys = list(doc.keys())
         for k in keys:
             if k not in fields:
                 doc.pop(k, None)
-        doc["hashes"] = encode_hashes(hashes)
         p = doc.get("perplexity", 0)
+        doc["line_ids"] = encode_line_ids(line_ids)
         if p:
             doc["perplexity"] = round(p, 1)
         s = doc.get("language_score", 0)
@@ -119,7 +121,6 @@ class Unminifier(jsonql.Transformer):
         self._segments: Set[str] = set()
         self.read_doc = 0
         self.missed_doc = 0
-        self.missed_par = 0
         self.processed_par = 0
 
     def look_for(self, minified: Iterable[dict]) -> None:
@@ -141,22 +142,11 @@ class Unminifier(jsonql.Transformer):
         return self.clean(metadata, doc)
 
     def clean(self, metadata: dict, full_doc: dict) -> Optional[dict]:
-        hashes = set(_b2i(h) for h in decode_hashes(metadata.pop("hashes")))
-        content = full_doc["raw_content"]
-        cleaned = []
-        processed_par = 0
-        for line in content.split("\n"):
-            h = _str_hash(line)
-            processed_par += 1
-            if h not in hashes:
-                continue
-            # In case of in-document duplicate we keep only the first occurence.
-            # TODO: only keep two occurences if the hash appears twice
-            hashes.remove(h)
-            cleaned.append(line)
+        line_ids = decode_line_ids(metadata.pop("line_ids"))
+        lines = full_doc["raw_content"].split("\n")
+        cleaned = [lines[l] for l in line_ids]
 
-        self.missed_par += len(hashes)
-        self.processed_par += processed_par
+        self.processed_par += len(line_ids)
         if not cleaned:
             self.missed_doc += 1
             return None
@@ -180,9 +170,6 @@ class Unminifier(jsonql.Transformer):
         if self.missed_doc:
             r = self.missed_doc / self.processed
             summ.append(f"! Missed {self.missed_doc} documents ({r:.1%}) !")
-        if self.missed_par:
-            r = self.missed_par / self.processed_par
-            summ.append(f"! Missed {self.missed_par} paragraphs ({r:.1%}) !")
         return summ
 
 

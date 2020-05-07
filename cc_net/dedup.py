@@ -275,27 +275,6 @@ def remove_duplicates_sharded(
     tmp_directory.cleanup()
 
 
-def deduplicate_concatenated(files, outputs, field, output_hashes, finalize=True):
-    """Deduplicate several files at once, using the same set of hashes for all."""
-    hashes = FlatHashSet()
-    dedup_kwargs = dict(
-        field=field,
-        hashes=hashes,
-        add_hashes=True,
-        output_hashes=None,
-        finalize=finalize,
-    )
-
-    assert len(files) == len(outputs)
-    for f, o in zip(files, outputs):
-        jsonql.run_pipe(deduplicate, dedup_kwargs, file=f, output=o)
-        log(f"Saw {len(hashes)} hashes.")
-
-        if output_hashes:
-            log(f"Dumping {len(hashes)} hashes to {output_hashes}.")
-            hashes.dump(output_hashes)
-
-
 def compute_hashes(content) -> Optional[np.ndarray]:
     if not content:
         return None
@@ -327,16 +306,20 @@ def finalize_doc(doc, field, hashes=None):
 
     # Remove duplicates inside doc
     seen: Set[int] = set()
-    for i in range(len(hashes)):
-        if hashes[i] in seen:
-            hashes[i] = 0
-        seen.add(hashes[i])
-    new_lines = list(l for (l, h) in zip(lines, hashes) if h != 0)
+    original_line_ids = doc.get("line_ids", range(len(hashes)))
+    line_ids = []
+    new_lines = []
+    for l, line, h in zip(original_line_ids, lines, hashes):
+        if h not in seen and h != 0:
+            line_ids.append(l)
+            new_lines.append(line)
+        seen.add(h)
 
     doc[field] = "\n".join(new_lines)
-    doc["nlines"] = len(new_lines)
+    doc["nlines"] = len(line_ids)
     n_chars_kept = len(doc[field])
     doc["length"] = n_chars_kept
+    doc["line_ids"] = line_ids
     return n_chars, n_chars_kept
 
 
@@ -409,7 +392,7 @@ class DuplicatesRemover(jsonql.Transformer):
             self.duplicates.load(str(h))
             delay = time.time() - shard_start
             self.log(
-                f"Loaded hashes from {h} ({mem_footprint_gb()}GB total, took {delay / 60:.1}m)"
+                f"Loaded hashes from {h} ({mem_footprint_gb():.3f}GB total, took {delay / 60:.1}m)"
             )
 
         delay = time.time() - start
@@ -434,11 +417,9 @@ class DuplicatesRemover(jsonql.Transformer):
             return None
 
         doc_hashes = doc_hashes * keep
-        doc[self.hash_field] = [int(x) for x in doc_hashes]
         self.n_lines += keep.size
         self.n_lines_kept += kept
-
-        chars, kept_chars = finalize_doc(doc, self.field)
+        chars, kept_chars = finalize_doc(doc, self.field, hashes=doc_hashes)
         self.n_chars += chars
         self.n_chars_kept += kept_chars
         return doc
@@ -458,95 +439,3 @@ class DuplicatesRemover(jsonql.Transformer):
         selectivity = n_chars_kept / n_chars if n_chars else 0
         summ.append(f"Kept {n_chars_kept} chars out of {n_chars} ({selectivity:.1%}).")
         return summ
-
-
-def deduplicate(
-    source, field, hashes=None, output_hashes=None, add_hashes=True, finalize=True
-):
-    """
-    DOES TOO MANY THINGS
-    Removes duplicate lines found in the field `field` of the source documents.
-
-    Finds duplicate lines based on the hashes. Either hashes can be computed when
-    reading the documents or they can be loaded from a binary file.
-
-    If `add_hashes` is set to False only the given hashes will be considered.
-    This grants a better control on memory footprint.
-    """
-    hash_field = field + "_hash"
-    if isinstance(hashes, str) or isinstance(hashes, Path):
-        seen = FlatHashSet()
-        seen.load(hashes)
-    elif hashes is not None:
-        seen = hashes
-    else:
-        seen = FlatHashSet()
-    log(f"Loaded {len(seen)} unique hashes.")
-    n_doc = 0
-    batch_size = 100_000
-    n_lines, n_lines_kept = 0, 0
-    n_chars, n_chars_kept = 0, 0
-    t = time.time()
-
-    def log_stats(start_time):
-        end_time = time.time()
-        speed = batch_size / (end_time - start_time)
-
-        if add_hashes:
-            log(
-                f"Saw {len(seen)} unique hashes over {n_lines} lines in {n_doc} docs. [{speed:.1f} doc/s]"
-            )
-        else:
-            log(f"Processed {n_lines} lines in {n_doc} docs. [{speed:.1f} doc/s]")
-        max_mem = mem_footprint_gb()
-        log(f"Used up to {max_mem:.1f}GB of RAM.")
-        selectivity = n_lines_kept / n_lines if n_lines else 0
-        log(f"Kept {n_lines_kept} lines out of {n_lines} ({selectivity:.1%}).")
-        if finalize:
-            selectivity = n_chars_kept / n_chars if n_chars else 0
-            log(f"Kept {n_chars_kept} chars out of {n_chars} ({selectivity:.1%}).")
-
-    for doc in jsonql.read_jsons(source):
-        n_doc += 1
-        if n_doc % batch_size == 0:
-            log_stats(t)
-            t = time.time()
-
-        hashes = doc.get(hash_field) or compute_hashes(doc.get(field))
-        if hashes is None:
-            continue
-        if isinstance(hashes, list):
-            hashes = np.array(hashes, dtype=HASH_TYPE)
-
-        duplicate = seen.__contains__(hashes)
-        if add_hashes:
-            seen.add(hashes, duplicate)
-
-        keep = duplicate < 1
-        kept = keep.sum()
-        hashes = hashes * keep
-        doc[hash_field] = list(int(x) for x in hashes)
-        n_lines += keep.size
-        n_lines_kept += kept
-        if finalize:
-            chars, kept_chars = finalize_doc(doc, field)
-            n_chars += chars
-            n_chars_kept += kept_chars
-        if kept > 0:
-            yield doc
-
-    log_stats(t)
-
-    if output_hashes:
-        log(f"Dumping {len(seen)} hashes to {output_hashes}.")
-        seen.dump(output_hashes)
-
-
-def main():
-    args = get_args()
-
-    return jsonql.run_pipe(deduplicate, args)
-
-
-if __name__ == "__main__":
-    main()
