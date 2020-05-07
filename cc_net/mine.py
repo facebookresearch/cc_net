@@ -25,14 +25,24 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 import func_argparse
 
 # Local scripts
-from cc_net import dedup, execution, jsonql, perplexity, process_wet_file
+from cc_net import dedup, execution, jsonql, minify, perplexity, process_wet_file
 from cc_net import regroup as regroup_module
 from cc_net import split_by_lang
 from cc_net.execution import Executor
-import json
 
 # Constant
 CUTOFF_CSV = Path(__file__).parent / "data" / "cutoff.csv"
+
+DEFAULT_PIPELINE = [
+    "dedup",
+    "lid",
+    "keep_lang",
+    "sp",
+    "lm",
+    "pp_bucket",
+    "drop",
+    "split",
+]
 
 
 class Config(NamedTuple):
@@ -57,7 +67,7 @@ class Config(NamedTuple):
     target_size: size of finals files produce during `regroup` stage
     cleanup_after_regroup: delete intermediary files after regroup
     task_parallelism: max number of task to run in parallel
-    pipeline: restricts the mining pipeline to the given steps
+    pipeline: restricts the mining pipeline to the given steps. Order is important !
     experiments: (HACK) enable specific experiments in the code
     """
 
@@ -80,7 +90,7 @@ class Config(NamedTuple):
     target_size: str = "4G"
     cleanup_after_regroup: bool = True
     task_parallelism: int = 500
-    pipeline: Sequence[str] = []
+    pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
 
@@ -128,9 +138,7 @@ class Config(NamedTuple):
 
     @property
     def will_split(self) -> bool:
-        if not self.pipeline:
-            return True
-        return "split" in self.pipeline
+        return "split" in self.pipeline or "split_by_segment" in self.pipeline
 
     def get_lm_languages(self) -> Sequence[str]:
         if self.lm_languages is not None:
@@ -143,6 +151,11 @@ class Config(NamedTuple):
         if self.lang_blacklist:
             languages = [l for l in languages if l not in self.lang_blacklist]
         return languages
+
+    def _get_dir(self, name: str, regroup: bool =False) -> Path:
+        if self.will_split and not regroup:
+            return self.output_dir / f"{name}_split" / self.dump
+        return self.output_dir / name / self.dump
 
 
 BASE_CONFIG = Config()
@@ -247,6 +260,10 @@ def mine(conf: Config) -> List[Path]:
             mined_dir / f"{shard:04d}.json.gz" for shard in range(conf.num_shards)
         ]
 
+    if "mini_again" in conf.experiments:
+        mined_dir = conf.output_dir / "mini_again" / conf.dump
+        outputs = [mined_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
+
     # TODO: try to reduce this / make it a function of "hash_in_mem" / num_langs
     mem_gb = 60 + 1 * conf.hash_in_mem
     timeout_hour = 5
@@ -260,6 +277,13 @@ def mine(conf: Config) -> List[Path]:
         timeout_hour = 8
 
     missing_outputs = [(shard, o) for shard, o in enumerate(outputs) if not o.exists()]
+
+    if "mini_again" in conf.experiments:
+        missing_outputs = [
+            (shard, o)
+            for shard, o in enumerate(outputs)
+            if shard in [5, 139] and not o.exists()
+        ]
 
     if not missing_outputs:
         return outputs
@@ -285,7 +309,13 @@ def mine(conf: Config) -> List[Path]:
     return outputs
 
 
+def _get_segment(tmp_output: Path, doc: dict) -> str:
+    segment: str = doc["cc_segment"].split("/")[-1]
+    return str(tmp_output / segment.replace(".warc.wet.gz", ".json.gz"))
+
+
 def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> str:
+    assert conf.pipeline
     tmp_output = tmp(output)
     if "hashes" in conf.experiments:
         # HACK: used for generating paper figures
@@ -294,12 +324,11 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         shard = 0
     cc_shard = conf.get_cc_shard(shard)
 
-    steps: Dict[str, jsonql.Transformer] = {}
+    steps: Dict[str, Optional[jsonql.Transformer]] = {}
     lang_id = Path("bin") / "lid.bin"
-    if "lid_before_dedup" in conf.pipeline:
-        steps["lid_before_dedup"] = split_by_lang.Classifier(
-            model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
-        )
+    steps["lid_before_dedup"] = split_by_lang.Classifier(
+        model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
+    )
     steps["dedup"] = dedup.DuplicatesRemover(field="raw_content", hashes_files=hashes)
 
     steps["lid"] = split_by_lang.Classifier(
@@ -309,20 +338,20 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         top=1,
         threshold=conf.lang_threshold,
     )
-    if "lid_after_dedup" in conf.pipeline:
-        steps["lid_after_dedup"] = split_by_lang.Classifier(
-            model=lang_id, field="raw_content", out_field="lid_after_dedup", top=5
-        )
-
-    if conf.lang_whitelist:
-        steps["keep_lang"] = jsonql.where(
-            [lambda doc: doc.get("language") in set(conf.lang_whitelist)]
-        )
+    steps["lid_after_dedup"] = split_by_lang.Classifier(
+        model=lang_id, field="raw_content", out_field="lid_after_dedup", top=5
+    )
 
     if conf.lang_blacklist:
         steps["keep_lang"] = jsonql.where(
             [lambda doc: doc.get("language") not in set(conf.lang_blacklist)]
         )
+    elif conf.lang_whitelist:
+        steps["keep_lang"] = jsonql.where(
+            [lambda doc: doc.get("language") in set(conf.lang_whitelist)]
+        )
+    else:
+        steps["keep_lang"] = None
 
     tok_field = "tokenized"
     steps["sp"] = perplexity.MultiSentencePiece(
@@ -339,15 +368,17 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         # load_method=kenlm.LoadMethod.PARALLEL_READ,
     )
     steps["pp_bucket"] = perplexity.PerplexityBucket(CUTOFF_CSV)
-    steps["drop"] = perplexity.DropKeys(tok_field)
+    steps["drop"] = perplexity.DropKeys(tok_field, "line_ids")
 
     pattern = str(tmp_output / "{language}_{bucket}.json.gz")
     steps["split"] = jsonql.split(pattern=str(pattern), mkdir=True)
 
-    if conf.pipeline:
-        pipeline = list(t for (name, t) in steps.items() if name in conf.pipeline)
-    else:
-        pipeline = list(steps.values())
+    steps["split_by_segment"] = jsonql.split(
+        split_fn=lambda doc: _get_segment(tmp_output, doc), mkdir=True
+    )
+    steps["minify"] = minify.Minifier()
+
+    pipeline = filter(None, (steps[s] for s in conf.pipeline))
 
     jsonql.run_pipes(
         *pipeline,
@@ -362,18 +393,16 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
 
 
 def reproduce(conf: Config) -> List[Path]:
-
+    reproduce_dir = conf._get_dir("reproduce")
+    reproduce_dir.mkdir(parents=True, exist_ok=True)
     if conf.will_split:
-        # Give a directories when splitting
-        reproduce_dir = conf.output_dir / "reproduce_split" / conf.dump
+        # Givedirectories en splitting
         outputs = [reproduce_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
     else:
         # Files otherwise
-        reproduce_dir = conf.output_dir / "reproduce" / conf.dump
         outputs = [
             reproduce_dir / f"{shard:04d}.json.gz" for shard in range(conf.num_shards)
         ]
-    reproduce_dir.mkdir(parents=True, exist_ok=True)
     missing_outputs = [(shard, o) for shard, o in enumerate(outputs) if not o.exists()]
     if not missing_outputs:
         return outputs
@@ -411,11 +440,13 @@ def _reproduce_shard(conf: Config, shard: int, output: Path) -> str:
 
 
 def regroup(
-    conf: Config, before: Callable[[Config], List[Path]], regroup_dir: Path
+    conf: Config, before: Callable[[Config], List[Path]], dirname: str
 ) -> Path:
     """Reshards each language/quality after 'mine'."""
-    mined_dir = regroup_dir.parent / (regroup_dir.name + "_split")
-    if mined_dir:
+    mined_dir = conf.output_dir / f"{dirname}_split" / conf.dump
+    regroup_dir = conf.output_dir / dirname / conf.dump
+
+    if mined_dir.exists():
         all_files = list(mined_dir.glob("????/*.json.gz"))
         if regroup_dir.exists() and len(all_files) == 0:
             print(f"No files found in {mined_dir} for regroup. Exiting.")
@@ -485,6 +516,45 @@ def _regroup(conf: Config, inputs: List[Path], output: Path) -> str:
     return f"Regrouped {output}"
 
 
+def move_segments(
+    conf: Config, first_stage: Callable, dirname: str
+) -> Path:
+    """Reshards each language/quality after 'mine'."""
+    mined_dir = conf.output_dir / f"{dirname}_split" / conf.dump
+    regroup_dir = conf.output_dir / dirname / conf.dump
+    if mined_dir.exists():
+        all_dirs = list(mined_dir.glob("????"))
+        if regroup_dir.exists() and len(all_dirs) == 0:
+            print(f"No files found in {mined_dir} for regroup. Exiting.")
+            return regroup_dir
+
+    # check that mining is over.
+    all_dirs = [d for d in first_stage(conf)]
+    assert all(
+        d.is_dir() for d in all_dirs
+    ), f"move_segments was expecting dirs received files: {all_dirs[:10]}..."
+    assert all_dirs, f"No files found inside mined dir: {mined_dir}"
+
+    regroup_dir.parent.mkdir(exist_ok=True)
+    regroup_dir.mkdir(exist_ok=True)
+    ex = conf.get_executor(f"moveseg_{conf.dump}", mem_gb=1, timeout_hour=1, cpus=2)
+
+    def _move_segments(subdir: Path, regroup_dir: Path) -> None:
+        n = 0
+        for f in subdir.iterdir():
+            n += f.name.endswith(".json.gz")
+            new_name = regroup_dir / f.name
+            # this make the job idempotent.
+            f.rename(new_name)
+            f.symlink_to(new_name)
+
+        print(f"Moved {n} .json.gz files from {subdir} to {regroup_dir}")
+
+    ex(_move_segments, all_dirs, repeat(regroup_dir))
+    print(f"Results are in {regroup_dir}")
+    return regroup_dir
+
+
 def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
     stats: Dict[str, dict] = {}
     for file in sorted(output_dir.glob("*.json.gz")):
@@ -540,6 +610,7 @@ def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
                 stats[fname]["checksum"],
             )
 
+
 def get_main_parser() -> ArgumentParser:
     # Generates the 'main' parser by patching a 'Config' parser
     p = func_argparse.func_argparser(Config)
@@ -569,19 +640,21 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
     print("Will run mine.py with the following config:", conf)
 
     # Decide if we need to mine or if we have metadata available
+
     if conf.metadata:
         print(f"Will use pre-computed metadata from {conf.metadata}")
-        first_stage: Callable[[Config], Any] = reproduce
-        regroup_dir = conf.output_dir / "reproduce" / conf.dump
+        first_stage = reproduce
+        dir_name = "reproduce"
     else:
         first_stage = mine
-        regroup_dir = conf.output_dir / "mined" / conf.dump
-
-    # Only regroup if we split the shards.
-    if conf.will_split:
-        regroup(conf, first_stage, regroup_dir)
-    else:
-        first_stage(conf)
+        dir_name = "mined"
+    regroup_dir = conf._get_dir(dir_name, regroup=True)
+    if "split" in conf.pipeline:
+        # Only regroup if we split the shards.
+        regroup(conf, first_stage, dir_name)
+    elif "split_by_segment" in conf.pipeline:
+        # If we split by segment then regrouping is trivial, since segments appear in only one shard.
+        move_segments(conf, first_stage, dir_name)
 
     if "test" in config_base:
         _validate_test(conf, regroup_dir)

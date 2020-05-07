@@ -690,19 +690,25 @@ class split(Transformer):
     # Not parallelisable since we are writing to files.
     parallelisable = False
 
-    def __init__(self, pattern=None, split_fn=None, mkdir=False):
+    def __init__(
+        self,
+        pattern: Union[Path, str] = None,
+        split_fn: Callable[[dict], str] = None,
+        mkdir: bool = False,
+    ):
         super().__init__()
-        assert pattern or split_fn, "split need either a pattern or a split_fn"
         assert not (
             pattern and split_fn
         ), "split can't have both a pattern and a split_fn"
-        self.split_fn = split_fn or self.make_split_fn(pattern)
+        if split_fn is not None:
+            self.split_fn = split_fn
+        else:
+            assert pattern, "split need either a pattern or a split_fn"
+            self.split_fn = self.make_split_fn(str(pattern))
         self.mkdir = mkdir
         self.o: dict = {}
 
-    def make_split_fn(self, pattern):
-        if isinstance(pattern, Path):
-            pattern = str(pattern)
+    def make_split_fn(self, pattern: str) -> Callable[[dict], str]:
         candidates = list(re.findall(r"(?i:\{([_a-z][_a-z0-9]*)\})", pattern))
         return lambda doc: pattern.format(**{c: doc[c] for c in candidates})
 
@@ -1151,7 +1157,7 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
 
 
 def open_remote_file(
-    url: str, mode: str = "r", cache: Path = None,
+    url: str, mode: str = "r", cache: Path = None
 ) -> ContextManager[Iterable[str]]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
@@ -1329,8 +1335,6 @@ class BlockedGzipWriter(MultiFile):
         self.current_handle.close()
         self.current_handle = None
         index = np.array(self.index, dtype=np.uint64)
-        if len(index) <= 1:
-            return
         with open(str(self.filename) + ".index", "wb") as o:
             np.save(o, index)
 

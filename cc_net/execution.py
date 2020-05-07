@@ -84,7 +84,7 @@ def get_submitit_executor(
         timeout_min=int(timeout_hour * 60),
         mem_gb=mem_gb,
         cpus_per_task=cpus,
-        array_parallelism=task_parallelism,
+        slurm_array_parallelism=task_parallelism,
         **options,
     )
 
