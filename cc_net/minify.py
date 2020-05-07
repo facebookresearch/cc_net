@@ -9,7 +9,7 @@ import base64
 import hashlib
 import itertools
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Union
 
 import numpy as np
 
@@ -61,14 +61,14 @@ def decode_hashes(compact: str) -> List[bytes]:
     return res
 
 
-def encode_line_ids(line_ids: Iterable[int]) -> str:
+def encode_line_ids(line_ids: Sequence[int]) -> str:
     arr = np.array(line_ids, dtype="<u2")
     return base64.b64encode(arr.tobytes()).decode("ascii")
 
 
 def decode_line_ids(compact: str) -> List[int]:
     ids_bytes = bytearray(base64.b64decode(compact))
-    return np.ndarray(dtype="<i2", buffer=ids_bytes)
+    return np.ndarray(len(ids_bytes) // 2, dtype="<i2", buffer=ids_bytes)
 
 
 def get_doc_key(digest: str) -> int:

@@ -15,8 +15,8 @@ from cc_net import process_wet_file
 from cc_net.minify import (
     HASH_SIZE,
     decode_hashes,
-    encode_as_hashes,
     encode_hashes,
+    encode_line_ids,
     get_hashes,
 )
 
@@ -41,9 +41,9 @@ def test_minify():
         "raw_content": "Hello world !\nIs everyone happy in here ?",
         "language": "en",
         "perplexity": 120.0,
+        "line_ids": [0, 4],
     }
-    expected = {"hashes": "fApSnZA0cQg=", "language": "en", "perplexity": 120.0}
-
+    expected = {"line_ids": "AAAEAA==", "language": "en", "perplexity": 120.0}
     minifier = minify.Minifier()
     assert expected == minifier(doc)
 
@@ -60,10 +60,14 @@ def http_from_disk(monkeypatch):
 
 
 def test_unminify(http_from_disk):
-    # same quotes minus the "Education: ..." one
-    quotes = """Don't part with your illusions. When they are gone you may still exist, but you have ceased to live.
+    full_quotes = """Don't part with your illusions. When they are gone you may still exist, but you have ceased to live.
+Education: that which reveals to the wise, and conceals from the stupid, the vast limits of their knowledge.
 Facts are stubborn things, but statistics are more pliable.
 Fiction is obliged to stick to possibilities. Truth isn't."""
+    # We don't need no education.
+    chosen_quotes = "\n".join(
+        l for l in full_quotes.splitlines() if "Education" not in l
+    )
 
     cc_doc = {
         "url": "http://sample_english.com",
@@ -71,30 +75,47 @@ Fiction is obliged to stick to possibilities. Truth isn't."""
         "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
         "source_domain": "sample_english.com",
         "title": "Famous Mark Twain Quotes",
-        "raw_content": quotes,
+        "raw_content": full_quotes,
         "cc_segment": "crawl-data/sample.warc.txt",
-        "nlines": 3,
-        "length": len(quotes),
-        "original_nlines": 4,
-        "original_length": 353,
+        "nlines": 4,
+        "length": 353,
     }
-    metadata = {
+
+    ccnet_metadata = {
         "language": "en",
         "language_score": 0.99,
         "perplexity": 151.5,
         "bucket": "head",
+        "raw_content": chosen_quotes,
+        "nlines": 3,
+        "length": len(chosen_quotes),
+        "original_nlines": 4,
+        "original_length": 353,
+        "line_ids": [0, 2, 3],
     }
-    full_doc = dict(**cc_doc, **metadata)
+    ccnet_doc = dict(cc_doc, **ccnet_metadata)
+    mini = minify.Minifier()(ccnet_doc.copy())
+    assert mini is not ccnet_doc
 
-    # make a copy of doc since minifier operates in place
-    mini = minify.Minifier()(full_doc)
-
-    assert mini != cc_doc
-    assert {k: mini[k] for k in metadata} == metadata
+    important_fields = [
+        "url",
+        "digest",
+        "cc_segment",
+        "language",
+        "language_score",
+        "perplexity",
+        "bucket",
+        "line_ids",
+    ]
+    expected = {k: ccnet_doc[k] for k in important_fields}
+    expected["line_ids"] = encode_line_ids(expected["line_ids"])  # type: ignore
+    assert expected == mini
 
     unminifier = minify.Unminifier()
     unminifier.look_for([mini])
-    assert full_doc == unminifier(cc_doc)
+    # line_ids is removed when unminifying
+    ccnet_doc.pop("line_ids")
+    assert ccnet_doc == unminifier(cc_doc)
 
 
 def test_unminify_hit_mem_cache(http_from_disk):
@@ -103,15 +124,13 @@ def test_unminify_hit_mem_cache(http_from_disk):
             "url": "http://sample_english.com",
             "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
             "cc_segment": "crawl-data/sample.warc.txt",
-            "hashes": encode_as_hashes(
-                ["Facts are stubborn things, but statistics are more pliable."]
-            ),
+            "line_ids": encode_line_ids([2]),
         },
         {
             "url": "http://sample_chinese.com",
             "digest": "sha1:Y4E6URVYGIAFNVRTPZ5S3J64RTZTP6HJ",
             "cc_segment": "crawl-data/sample.warc.txt",
-            "hashes": encode_as_hashes(["事實是固執的東西，但統計數字卻比較柔和。"]),
+            "line_ids": encode_line_ids([2]),
         },
     ]
     unminifier = minify.Unminifier()

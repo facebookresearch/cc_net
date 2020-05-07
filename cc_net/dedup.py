@@ -370,7 +370,7 @@ class DuplicatesRemover(jsonql.Transformer):
     # The hashes can't be pickled so they will have to be read back from disk.
     warn_when_pickling = True
 
-    def __init__(self, field: str, hashes_files: List[Path], collect: bool=False):
+    def __init__(self, field: str, hashes_files: List[Path], collect: bool = False):
         """
         Remove duplicates
         """
@@ -410,7 +410,11 @@ class DuplicatesRemover(jsonql.Transformer):
         doc_hashes = compute_hashes(content)
 
         assert self.duplicates is not None
-        seen = self.duplicates.add(doc_hashes) if self.collect else self.duplicates[doc_hashes]
+        seen = (
+            self.duplicates.add(doc_hashes)
+            if self.collect
+            else self.duplicates[doc_hashes]
+        )
         keep = seen < True
         kept = keep.sum()
         if kept == 0:

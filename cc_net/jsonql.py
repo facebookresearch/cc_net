@@ -485,12 +485,16 @@ def json_stdin() -> Iterable[dict]:
     return JsonReader().map(sys.stdin)
 
 
-def read_jsons(file: Union[FileDescriptor, Iterable[str], Iterable[dict]], strict=False) -> Iterator[dict]:
+def read_jsons(
+    file: Union[FileDescriptor, Iterable[str], Iterable[dict]], strict=False
+) -> Iterator[dict]:
     with smart_open(file) as f:
         yield from _read_jsons(f)
 
 
-def _read_jsons(lines: Union[Iterable[str], Iterable[dict]], strict=False) -> Iterator[dict]:
+def _read_jsons(
+    lines: Union[Iterable[str], Iterable[dict]], strict=False
+) -> Iterator[dict]:
     reader = JsonReader(strict=strict)
 
     for line in reader.map(lines):
