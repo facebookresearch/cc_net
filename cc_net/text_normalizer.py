@@ -70,6 +70,10 @@ def strip_accents(line: str) -> str:
 NON_PRINTING_CHARS_RE = re.compile(
     f"[{''.join(map(chr, list(range(0,32)) + list(range(127,160))))}]"
 )
+DIGIT_RE = re.compile(r"\d")
+PUNCT_OR_NON_PRINTING_CHARS_RE = re.compile(
+    (UNICODE_PUNCT_RE.pattern + NON_PRINTING_CHARS_RE.pattern).replace("][", "")
+)
 
 
 def remove_non_printing_char(text: str) -> str:
@@ -161,7 +165,7 @@ def normalize(line: str, accent=True, case=True, numbers=True, punct=1) -> str:
     if accent:
         line = strip_accents(line)
     if numbers:
-        line = re.sub(r"\d", "0", line)
+        line = DIGIT_RE.sub("0", line)
     if punct == 1:
         line = replace_unicode_punct(line)
     elif punct == 2:
@@ -170,5 +174,17 @@ def normalize(line: str, accent=True, case=True, numbers=True, punct=1) -> str:
     return line
 
 
-def normalize_for_dedup(line: str) -> str:
+def slow_normalize_for_dedup(line: str) -> str:
     return normalize(line, accent=False, case=True, numbers=True, punct=2)
+
+
+def normalize_for_dedup(line: str) -> str:
+    line = line.strip()
+    if not line:
+        return line
+    # case
+    line = line.lower()
+    # numbers
+    line = DIGIT_RE.sub("0", line)
+    line = PUNCT_OR_NON_PRINTING_CHARS_RE.sub("", line)
+    return line

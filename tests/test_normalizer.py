@@ -21,3 +21,10 @@ def test_numbers():
     normalized = "000000000 | 0000000000"
     assert txt.normalize(weird, numbers=True) == normalized
     assert txt.normalize(weird, numbers=False) == weird
+
+
+def test_normalize_for_dedup():
+    weird = "０２３´∶：\x10 | ;012 hèllo"
+    normalized = "000 | ;000 hèllo"
+    assert normalized == txt.slow_normalize_for_dedup(weird)
+    assert normalized == txt.normalize_for_dedup(weird)
