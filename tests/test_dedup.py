@@ -12,7 +12,6 @@ from typing import Iterable, Sequence
 from cc_net import dedup, jsonql
 from cc_net.dedup import str_hash
 from cc_net.flat_hash_set import FlatHashSet
-from tests.test_jsonql import TestCaseWithTmpDir
 
 
 def text(*args: str) -> str:
@@ -72,40 +71,37 @@ def test_simple_dedup(tmp_path: Path) -> None:
     assert_documents_equal(expected, results, ignoring=LENGTHS)
 
 
-class DedupTest(TestCaseWithTmpDir):
-    def test_dedup_with_dump(self):
-        tmp = self.get_tmpdir()
+def test_dedup_with_dump(tmp_path: Path):
+    hashes = tmp_path / "hashes.bin"
+    documents = [
+        dict(text=text("_Hello", "_World", "I'm so original")),
+        dict(text=text("_world", "I'm originaler", "_Hello")),
+    ]
+    collector = dedup.HashesCollector(field="text", output=hashes)
+    list(collector.map(documents))
+    results = load_hashes(hashes)
+    expected = {
+        str_hash(l): l.startswith("_")
+        for l in ["_hello", "_world", "i'm so original", "i'm originaler"]
+    }
+    assert expected == results
 
-        documents = [
-            dict(text=text("_Hello", "_World", "I'm so original")),
-            dict(text=text("_world", "I'm originaler", "_Hello")),
-        ]
-        collector = dedup.HashesCollector(field="text", output=tmp("hashes.bin"))
-        list(collector.map(documents))
-        results = load_hashes(tmp("hashes.bin"))
-        expected = {
-            str_hash(l): l.startswith("_")
-            for l in ["_hello", "_world", "i'm so original", "i'm originaler"]
-        }
-        self.assertEqual(expected, results)
 
-    def test_dedup_with_np_dump(self):
-        tmp = self.get_tmpdir()
+def test_dedup_with_np_dump(tmp_path: Path):
+    hashes = tmp_path / "hashes.bin"
+    documents = [
+        dict(text=text("_Hello", "_World", "I'm so original")),
+        dict(text=text("_world", "I'm originaler", "_Hello")),
+    ]
+    with dedup.HashesCollector(field="text", output=hashes) as d:
+        list(d.map(documents))
 
-        documents = [
-            dict(text=text("_Hello", "_World", "I'm so original")),
-            dict(text=text("_world", "I'm originaler", "_Hello")),
-        ]
-        with dedup.HashesCollector(field="text", output=tmp("hashes.bin")) as d:
-            list(d.map(documents))
-
-        results = FlatHashSet()
-        results.load_np(tmp("hashes.bin"))
-        expected = set(
-            str_hash(l)
-            for l in ["_hello", "_world", "i'm so original", "i'm originaler"]
-        )
-        self.assertEqual(expected, set(results.keys()))
+    results = FlatHashSet()
+    results.load_np(hashes)
+    expected = set(
+        str_hash(l) for l in ["_hello", "_world", "i'm so original", "i'm originaler"]
+    )
+    assert expected == set(results.keys())
 
 
 def test_dedup_from_hashes(tmp_path: Path):
