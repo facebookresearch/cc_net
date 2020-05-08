@@ -1,0 +1,17 @@
+{
+    "dump": "2019-09",
+    "num_shards": 1600,
+    "pipeline": [
+        "dedup",
+        "lid",
+        "keep_lang",
+        "sp",
+        "lm",
+        "pp_bucket",
+        "drop",
+        "minify",
+        "split_by_segment"
+    ],
+    "execution": "local",
+    "output_dir": "data/mine_segment"
+}
