@@ -108,6 +108,9 @@ def get_submitit_executor(
             print(f"Finished job {job.job_id} ({done} / {total}).")
             e = job.exception()
             if not e:
+                message = job.result()
+                if message is not None:
+                    print(message)
                 continue
 
             print(f"Failed job {job.job_id}:", e)
@@ -133,14 +136,18 @@ def debug_executor(function: Callable[..., Optional[str]], *args: Iterable) -> N
         try:
             message = function(*x)
         except Exception:
-            import pdb
+            try:
+                import ipdb as pdb
+            except ImportError:
+                import pdb  # type: ignore
             import traceback
 
             traceback.print_exc()
             print("")
             pdb.post_mortem()
             sys.exit(1)
-        print(message, f"({i + 1} / {approx_length})")
+        if message is not None:
+            print(message, f"({i + 1} / {approx_length})")
 
 
 def _approx_length(*args: Iterable):

@@ -77,7 +77,7 @@ class Config(NamedTuple):
     execution: str = "slurm"
     num_shards: int = 1600
     num_segments_per_shard: int = -1
-    metadata: Optional[str] = None
+    metadata: Optional[Path] = None
     min_len: int = 300
     hash_in_mem: int = 50
     lang_whitelist: Sequence[str] = []
@@ -127,13 +127,10 @@ class Config(NamedTuple):
     @classmethod
     def from_json(cls, json_file: Path) -> "Config":
         json_config = json.loads(json_file.read_text())
-        # TODO: validate the json file.
-        if "output_dir" in json_config:
-            json_config["output_dir"] = Path(json_config["output_dir"])
-        if "lm_dir" in json_config:
-            json_config["lm_dir"] = Path(json_config["lm_dir"])
-        if "config_name" not in json_config:
-            json_config["config_name"] = json_file.stem
+        path_keys = ["cache_dir", "lm_dir", "metadata", "output_dir"]
+        for key in path_keys:
+            if key in json_config:
+                json_config[key] = Path(json_config[key])
         return Config(**json_config)
 
     @property
@@ -186,18 +183,20 @@ PREDEF_CONFIGS = {
 }
 
 
-def tmp(output: Path):
+def tmp(output: Path) -> Path:
     return output.parent / (output.stem + ".tmp" + output.suffix)
 
 
-def finalize(tmp_output: Path, output: Path):
+def finalize(tmp_output: Path, output: Path) -> None:
     if not tmp_output.exists():
         warnings.warn(f"Targeted tmp output {tmp_output} doesn't exists.")
+        return
+
     tmp_index = tmp_output.parent / (tmp_output.name + ".index")
-    return tmp_output.replace(output)
+    tmp_output.rename(output)
 
     if tmp_index.exists():
-        tmp_index.replace(output.parent / (output.name + ".index"))
+        tmp_index.rename(output.parent / (output.name + ".index"))
 
 
 def _transpose(iterable: Sequence[Tuple[Any, ...]], n=-1) -> Tuple[List, ...]:
@@ -368,7 +367,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         # load_method=kenlm.LoadMethod.PARALLEL_READ,
     )
     steps["pp_bucket"] = perplexity.PerplexityBucket(CUTOFF_CSV)
-    steps["drop"] = perplexity.DropKeys(tok_field, "line_ids")
+    steps["drop"] = perplexity.DropKeys(tok_field)
 
     pattern = str(tmp_output / "{language}_{bucket}.json.gz")
     steps["split"] = jsonql.split(pattern=str(pattern), mkdir=True)
@@ -425,7 +424,8 @@ def _reproduce_shard(conf: Config, shard: int, output: Path) -> str:
         cache_dir=conf.cache_dir,
     )
 
-    unminifier = transpose.LinearUnminifier(conf.metadata + "/" + conf.dump)
+    unminifier = transpose.LinearUnminifier(conf.metadata / conf.dump)
+    # TODO: we should look at the conf to see how to split
     pipeline: List[jsonql.Transformer] = [unminifier]
 
     if conf.will_split:
@@ -535,16 +535,23 @@ def move_segments(conf: Config, first_stage: Callable, dirname: str) -> Path:
     regroup_dir.mkdir(exist_ok=True)
     ex = conf.get_executor(f"moveseg_{conf.dump}", mem_gb=1, timeout_hour=1, cpus=2)
 
-    def _move_segments(subdir: Path, regroup_dir: Path) -> None:
+    def _move_segments(subdir: Path, regroup_dir: Path) -> Optional[str]:
         n = 0
         for f in subdir.iterdir():
+            if not f.is_file() or f.is_symlink():
+                continue
             n += f.name.endswith(".json.gz")
             new_name = regroup_dir / f.name
+            target = new_name.resolve()
+            assert f.resolve() != target
             # this make the job idempotent.
             f.rename(new_name)
-            f.symlink_to(new_name)
+            f.symlink_to(target)
 
-        print(f"Moved {n} .json.gz files from {subdir} to {regroup_dir}")
+        if n == 0:
+            return None
+
+        return f"Moved {n} .json.gz files from {subdir} to {regroup_dir}"
 
     ex(_move_segments, all_dirs, repeat(regroup_dir))
     print(f"Results are in {regroup_dir}")
@@ -638,9 +645,15 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
     # Decide if we need to mine or if we have metadata available
 
     if conf.metadata:
+        conf = conf._replace(pipeline=["split"])
+        # this is not very clean. We should either:
+        #   - move back to the reproduce command
+        #   - add an 'unminify' step that read conf.metadata
+
         print(f"Will use pre-computed metadata from {conf.metadata}")
         first_stage = reproduce
         dir_name = "reproduce"
+
     else:
         first_stage = mine
         dir_name = "mined"
@@ -652,7 +665,7 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
         # If we split by segment then regrouping is trivial, since segments appear in only one shard.
         move_segments(conf, first_stage, dir_name)
 
-    if "test" in config_base:
+    if config_base == "test":
         _validate_test(conf, regroup_dir)
 
 

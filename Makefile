@@ -183,6 +183,19 @@ test:
 		<(zcat test_data/mined/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content) \
 		<(zcat test_data/reproduce/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content)
 
+test2:
+	python -m cc_net mine --config config/test_segment.json
+	python -m cc_net mine --config config/test_segment.json --metadata test_data2/mined
+	diff \
+		<(zcat test_data/mined/2019-09/fr_head_0000.json.gz | jq -c 'select(.cc_segment == "crawl-data/CC-MAIN-2019-09/segments/1550247479101.30/wet/CC-MAIN-20190215183319-20190215205319-00000.warc.wet.gz") | {url, perplexity}' | sort) \
+		<(zcat test_data2/mined/2019-09/CC-MAIN-20190215183319-20190215205319-00000.json.gz | jq -c 'select(.bucket == "head" and .language == "fr") | {url, perplexity}' | sort) \
+		| head
+
+	diff \
+		<(zcat test_data/mined/2019-09/fr_head_0000.json.gz | sort | jq -r .raw_content ) \
+		<(zcat test_data2/reproduce/2019-09/fr_head_0000.json.gz | sort | jq -r .raw_content ) \
+		| head
+
 test_data/regroup_tr/$(_SEGMENT).json.gz:
 	mkdir -p test_data/transpose
 	python cc_net/transpose.py transpose -f test_data/mined/2019-09 -o test_data/transpose/2019-09 \

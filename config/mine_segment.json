@@ -8,10 +8,8 @@
         "sp",
         "lm",
         "pp_bucket",
-        "drop",
         "minify",
         "split_by_segment"
     ],
-    "execution": "local",
-    "output_dir": "data/mine_segment"
+    "execution": "slurm"
 }

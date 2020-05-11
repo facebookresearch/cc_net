@@ -82,7 +82,6 @@ class Minifier(jsonql.Transformer):
 
     def __init__(self):
         self.fields = frozenset(COMPUTED_FIELDS + PUBLIC_FIELDS)
-        self.collisions = 0
 
     def do(self, doc: dict) -> Optional[dict]:
         line_ids: List[int] = doc.pop("line_ids")
@@ -99,9 +98,6 @@ class Minifier(jsonql.Transformer):
         if s:
             doc["language_score"] = round(s, 2)
         return doc
-
-    def summary(self):
-        return [f"Found {self.collisions} collisions"]
 
 
 class Unminifier(jsonql.Transformer):

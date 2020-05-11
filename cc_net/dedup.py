@@ -360,6 +360,7 @@ class HashesCollector(jsonql.Transformer):
     def close(self):
         if self.output and self.hashes:
             self.hashes.dump(self.output)
+            self.log(f"Saved {len(self.hashes)} hashes to {self.output}")
             # Free up mem even if the transformer is kept somewhere else.
             self.hashes = FlatHashSet()
 

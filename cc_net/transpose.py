@@ -180,7 +180,7 @@ class LinearUnminifier(minify.Unminifier):
         meta_file = self.folder / file_name.replace(".warc.wet.gz", ".json.gz")
         assert (
             meta_file.exists()
-        ), f"Couldn't found metadata file for segment {segment} at {file_name}"
+        ), f"Couldn't find metadata file for segment {segment} at {meta_file}"
         return str(meta_file)
 
     def fetch_metadata(self, segment: str) -> None:

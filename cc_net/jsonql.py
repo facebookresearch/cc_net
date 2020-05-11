@@ -435,12 +435,12 @@ def run_pipes(
                     pool = stack.enter_context(
                         multiprocessing.Pool(
                             processes=processes,
-                            initializer=set_global_transformer,
+                            initializer=_set_global_transformer,
                             initargs=(transform,),
                         )
                     )
                     results = pool.imap_unordered(
-                        global_transformer, f, chunksize=chunksize
+                        _global_transformer, f, chunksize=chunksize
                     )
 
             for fn in pipes:
@@ -459,22 +459,24 @@ def run_pipes(
                 print(res, file=text_o, flush=True)
 
 
-GLOBAL_TRANSFORMER: Optional[Transformer] = None
+# Allows to share transformer acroos subprocess.
+# Used by `run_pipes`
+_GLOBAL_TRANSFORMER: Optional[Transformer] = None
 
 
-def set_global_transformer(transformer: Transformer):
-    global GLOBAL_TRANSFORMER
+def _set_global_transformer(transformer: Transformer):
+    global _GLOBAL_TRANSFORMER
     p = multiprocessing.current_process()
     logging.info(
         f"Started subprocess {p.name}:{p.pid} from {os.getppid()} for {transformer}"
     )
     assert transformer.ready, f"{transformer} isn't ready"
-    GLOBAL_TRANSFORMER = transformer
+    _GLOBAL_TRANSFORMER = transformer
 
 
-def global_transformer(document: str) -> Optional[dict]:
-    assert GLOBAL_TRANSFORMER is not None
-    return GLOBAL_TRANSFORMER(document)
+def _global_transformer(document: str) -> Optional[dict]:
+    assert _GLOBAL_TRANSFORMER is not None
+    return _GLOBAL_TRANSFORMER(document)
 
 
 def lines(file: Iterable[str]) -> Iterable[str]:
@@ -1148,6 +1150,7 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
 
     Retry on connection errors.
     """
+    t0 = time.time()
     logging.info(f"Starting download of {url}")
     for i in range(1, n_retry + 1):
         try:
@@ -1163,8 +1166,11 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
                 f"Swallowed error {e} while downloading {url} ({i} out of {n_retry})"
             )
             time.sleep(10 * 2 ** i)
-
-    logging.info(f"Downloaded {url} [{r.status_code}]")
+    dl_time = time.time() - t0
+    dl_speed = len(r.content) / dl_time / 1024
+    logging.info(
+        f"Downloaded {url} [{r.status_code}] took {dl_time:.0f}s ({dl_speed:.1f}kB/s)"
+    )
     return r.content
 
 
@@ -1178,6 +1184,9 @@ def open_remote_file(
     if cache and cache.exists():
         return smart_open(cache, mode="r")
 
+    # TODO: open the remote file in streaming mode.
+    # The hard part is that we need to write the content on disk at the same time,
+    # to implement disk caching.
     raw_bytes = request_get_content(url)
     content = io.BytesIO(raw_bytes)
     if url.endswith(".gz"):
