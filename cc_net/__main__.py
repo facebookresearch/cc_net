@@ -12,11 +12,7 @@ import cc_net.mine
 
 
 def main():
-    parser = func_argparse.multi_argparser(
-        mine=cc_net.mine.get_main_parser("mine"),
-        reproduce=cc_net.mine.get_main_parser("reproduce"),
-    )
-    func_argparse.parse_and_call(parser)
+    func_argparse.parse_and_call(cc_net.mine.get_main_parser())
 
 
 if __name__ == "__main__":

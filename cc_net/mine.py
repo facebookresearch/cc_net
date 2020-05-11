@@ -41,7 +41,7 @@ DEFAULT_PIPELINE = [
     "lm",
     "pp_bucket",
     "drop",
-    "split",
+    "split_by_lang",
 ]
 
 
@@ -156,7 +156,7 @@ class Config(NamedTuple):
             return self.output_dir / f"{name}_split" / self.dump
         return self.output_dir / name / self.dump
 
-    def get_mined_dir(self) -> Path:
+    def get_mined_dir(self, regroup_dir: bool = False) -> Path:
         return self._get_dir(self.mined_dir)
 
 
@@ -166,6 +166,13 @@ BYLANG_CONFIG = Config(
     config_name="by_lang",
     mined_dir="mined_by_lang",
     pipeline=list(BASE_CONFIG.pipeline[:-1]) + ["split_by_lang"],
+)
+
+REPRODUCE_CONFIG = Config(
+    config_name="reproduce",
+    mined_dir="reproduce",
+    pipeline=["fetch_metadata", "split_by_lang"],
+    execution="local",
 )
 
 TEST_CONFIG = BASE_CONFIG._replace(
@@ -189,6 +196,7 @@ PREDEF_CONFIGS = {
     "test": TEST_CONFIG,
     "test_slurm": TEST_CONFIG._replace(execution="slurm,partition=dev"),
     "debug": TEST_CONFIG._replace(config_name="debug", mine_num_processes=0),
+    "reproduce": REPRODUCE_CONFIG,
     "augment": BASE_CONFIG._replace(
         config_name="augment", dump="2019-13", lang_blacklist=["en"]
     ),
@@ -260,7 +268,7 @@ HASHES_IN_MEM = [0, 1, 2, 5, 10, 20, 50, 100, 200, 400]
 
 def mine(conf: Config) -> List[Path]:
     """Remove dups, run LID and LMs, and split by lang and quality."""
-    mined_dir = conf.get_mined_dir() / conf.dump
+    mined_dir = conf.get_mined_dir()
     if conf.will_split:
         # Give a directories when splitting
         outputs = [mined_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
@@ -380,13 +388,19 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     steps["pp_bucket"] = perplexity.PerplexityBucket(CUTOFF_CSV)
     steps["drop"] = perplexity.DropKeys(tok_field)
 
+    if "fetch_metadata" in conf.pipeline:
+        # TODO: better default
+        assert conf.metadata is not None
+        steps["fetch_metadata"] = minify.MetadataFetcher(f"{conf.metadata}/{conf.dump}")
+
+    steps["minify"] = minify.Minifier()
+
     pattern = str(tmp_output / "{language}_{bucket}.json.gz")
     steps["split_by_lang"] = jsonql.split(pattern=str(pattern), mkdir=True)
 
     steps["split_by_segment"] = jsonql.split(
         split_fn=lambda doc: _get_segment(tmp_output, doc), mkdir=True
     )
-    steps["minify"] = minify.Minifier()
 
     pipeline = filter(None, (steps[s] for s in conf.pipeline))
 
@@ -404,8 +418,8 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
 
 def regroup(conf: Config, before: Callable[[Config], List[Path]], dirname: str) -> Path:
     """Reshards each language/quality after 'mine'."""
-    mined_dir = conf.output_dir / f"{dirname}_split" / conf.dump
-    regroup_dir = conf.output_dir / dirname / conf.dump
+    mined_dir = conf.output_dir / f"{conf.mined_dir}_split" / conf.dump
+    regroup_dir = conf.output_dir / conf.mined_dir / conf.dump
 
     if mined_dir.exists():
         all_files = list(mined_dir.glob("????/*.json.gz"))
@@ -656,8 +670,7 @@ def main(entry_point: str, config: str = "base", **config_as_dict: Any) -> None:
 
     print(f"Will run cc_net.mine.{entry_point} with the following config:", conf)
     first_stage = {"mine": mine, "reproduce": reproduce}[entry_point]
-    dir_name = entry_point
-    regroup_dir = conf._get_dir(dir_name, regroup=True)
+    dir_name = conf.mined_dir
 
     if "split_by_lang" in conf.pipeline:
         # Only try regrouping if we split the shards.
@@ -669,6 +682,7 @@ def main(entry_point: str, config: str = "base", **config_as_dict: Any) -> None:
         first_stage(conf)
 
     if conf.config_name == "test":
+        regroup_dir = conf._get_dir(dir_name, regroup=True)
         _validate_test(conf, regroup_dir)
 
 
