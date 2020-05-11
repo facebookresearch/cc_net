@@ -184,8 +184,8 @@ test:
 		<(zcat test_data/reproduce/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content)
 
 test2:
-	python -m cc_net mine --config config/test_segment.json
-	python -m cc_net mine --config config/test_reproduce.json
+	python -m cc_net --config config/test_segment.json
+	python -m cc_net --config config/test_reproduce.json
 	diff \
 		<(zcat test_data/mined/2019-09/fr_head_0000.json.gz | jq -c 'select(.cc_segment == "crawl-data/CC-MAIN-2019-09/segments/1550247479101.30/wet/CC-MAIN-20190215183319-20190215205319-00000.warc.wet.gz") | {url, perplexity}' | sort) \
 		<(zcat test_data2/mined_by_segment/2019-09/CC-MAIN-20190215183319-20190215205319-00000.json.gz | jq -c 'select(.bucket == "head" and .language == "fr") | {url, perplexity}' | sort) \

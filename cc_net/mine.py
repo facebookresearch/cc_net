@@ -20,7 +20,7 @@ from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import func_argparse
 
@@ -151,13 +151,10 @@ class Config(NamedTuple):
             languages = [l for l in languages if l not in self.lang_blacklist]
         return languages
 
-    def _get_dir(self, name: str, regroup: bool = False) -> Path:
+    def get_mined_dir(self, regroup: bool = False) -> Path:
         if self.will_split and not regroup:
-            return self.output_dir / f"{name}_split" / self.dump
-        return self.output_dir / name / self.dump
-
-    def get_mined_dir(self, regroup_dir: bool = False) -> Path:
-        return self._get_dir(self.mined_dir)
+            return self.output_dir / f"{self.mined_dir}_split" / self.dump
+        return self.output_dir / self.mined_dir / self.dump
 
 
 BASE_CONFIG = Config()
@@ -416,19 +413,13 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     return f"Mined {output}"
 
 
-def regroup(conf: Config, before: Callable[[Config], List[Path]], dirname: str) -> Path:
+def regroup(conf: Config, all_dirs: List[Path]) -> Path:
     """Reshards each language/quality after 'mine'."""
-    mined_dir = conf.output_dir / f"{conf.mined_dir}_split" / conf.dump
-    regroup_dir = conf.output_dir / conf.mined_dir / conf.dump
-
-    if mined_dir.exists():
-        all_files = list(mined_dir.glob("????/*.json.gz"))
-        if regroup_dir.exists() and len(all_files) == 0:
-            print(f"No files found in {mined_dir} for regroup. Exiting.")
-            return regroup_dir
-
-    all_files = [f for d in before(conf) for f in d.glob("*.json.gz")]
-    assert all_files, f"No files found inside mined dir: {mined_dir}"
+    regroup_dir = conf.get_mined_dir(regroup=True)
+    assert all_dirs
+    all_files = [f for d in all_dirs for f in d.glob("*.json.gz")]
+    if not all_files:
+        print(f"No .json.gz file found in {all_dirs[0]}")
 
     splits: Dict[str, List[Path]] = defaultdict(list)
     for f in all_files:
@@ -490,22 +481,14 @@ def _regroup(conf: Config, inputs: List[Path], output: Path) -> str:
     return f"Regrouped {output}"
 
 
-def move_segments(conf: Config, first_stage: Callable, dirname: str) -> Path:
+def move_segments(conf: Config, all_dirs: Sequence[Path]) -> Path:
     """Reshards each language/quality after 'mine'."""
-    mined_dir = conf.output_dir / f"{dirname}_split" / conf.dump
-    regroup_dir = conf.output_dir / dirname / conf.dump
-    if mined_dir.exists():
-        all_dirs = list(mined_dir.glob("????"))
-        if regroup_dir.exists() and len(all_dirs) == 0:
-            print(f"No files found in {mined_dir} for regroup. Exiting.")
-            return regroup_dir
-
     # check that mining is over.
-    all_dirs = [d for d in first_stage(conf)]
+    regroup_dir = conf.get_mined_dir(regroup=True)
+    assert all_dirs, "Received no dirs to move"
     assert all(
         d.is_dir() for d in all_dirs
     ), f"move_segments was expecting dirs received files: {all_dirs[:10]}..."
-    assert all_dirs, f"No files found inside mined dir: {mined_dir}"
 
     regroup_dir.parent.mkdir(exist_ok=True)
     regroup_dir.mkdir(exist_ok=True)
@@ -591,70 +574,18 @@ def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
 
 
 def get_main_parser() -> ArgumentParser:
-    def _parser(entry_point: str) -> ArgumentParser:
-        # Generates the 'main' parser by patching a 'Config' parser
-        p = func_argparse.func_argparser(Config)
+    # Generates the 'main' parser by patching a 'Config' parser
+    p = func_argparse.func_argparser(Config)
 
-        # Override defaults value to None, so we know what was set by the user.
-        # Note that it will keep the original default values in the help message.
-        p.set_defaults(**{f: None for f in Config._fields})
-
-        p.add_argument("--config", type=str, default="base")
-        p.set_defaults(__command=main)
-        p.set_defaults(entry_point=entry_point)
-        return p
-
-    return func_argparse.multi_argparser(
-        mine=_parser("mine"),
-        # TODO: we should hide parameters not used in `reproduce`
-        reproduce=_parser("reproduce"),
-    )
+    # Override defaults value to None, so we know what was set by the user.
+    # Note that it will keep the original default values in the help message.
+    p.set_defaults(**{f: None for f in Config._fields})
+    p.add_argument("--config", type=str, default="base")
+    p.set_defaults(__command=main)
+    return p
 
 
-def reproduce(conf: Config) -> List[Path]:
-    reproduce_dir = conf._get_dir("reproduce")
-    reproduce_dir.mkdir(parents=True, exist_ok=True)
-    if conf.will_split:
-        # Givedirectories en splitting
-        outputs = [reproduce_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
-    else:
-        # Files otherwise
-        outputs = [
-            reproduce_dir / f"{shard:04d}.json.gz" for shard in range(conf.num_shards)
-        ]
-    missing_outputs = [(shard, o) for shard, o in enumerate(outputs) if not o.exists()]
-    if not missing_outputs:
-        return outputs
-
-    ex = conf.get_executor("reproduce", timeout_hour=2, mem_gb=2, cpus=2)
-    ex(_reproduce_shard, repeat(conf), *_transpose(missing_outputs))
-    return outputs
-
-
-def _reproduce_shard(conf: Config, shard: int, output: Path) -> str:
-    metadata = conf.metadata
-    if metadata is None and (conf.output_dir / "mined").exists():
-        # TODO: better default
-        metadata = conf.output_dir / "mined"
-        print(f"Will use {metadata} as metadata source")
-    assert metadata is not None, "Need to set 'metadata' for reproduce"
-    cc = conf.get_cc_shard(shard)
-
-    unminifier = minify.MetadataFetcher(metadata / conf.dump)
-    # TODO: we should look at the conf to see how to split
-    pipeline: List[jsonql.Transformer] = [unminifier]
-
-    tmp_output = tmp(output)
-    if conf.will_split:
-        pattern = str(tmp(output) / "{language}_{bucket}.json.gz")
-        pipeline.append(jsonql.split(pattern=str(pattern), mkdir=True))
-
-    jsonql.run_pipes(*pipeline, file=cc, output=None if conf.will_split else tmp_output)
-    tmp_output.rename(output)
-    return f"Unminified {output}"
-
-
-def main(entry_point: str, config: str = "base", **config_as_dict: Any) -> None:
+def main(config: str = "base", **config_as_dict: Any) -> None:
     # Use the given 'config' as default value.
     config_base = config
     if config_base in PREDEF_CONFIGS:
@@ -668,22 +599,22 @@ def main(entry_point: str, config: str = "base", **config_as_dict: Any) -> None:
         )
     conf = conf._replace(**{k: v for (k, v) in config_as_dict.items() if v is not None})
 
-    print(f"Will run cc_net.mine.{entry_point} with the following config:", conf)
-    first_stage = {"mine": mine, "reproduce": reproduce}[entry_point]
-    dir_name = conf.mined_dir
+    print(f"Will run cc_net.mine.main with the following config:", conf)
 
-    if "split_by_lang" in conf.pipeline:
-        # Only try regrouping if we split the shards.
-        regroup(conf, first_stage, dir_name)
-    elif "split_by_segment" in conf.pipeline:
-        # If we split by segment then regrouping is trivial, since segments appear in only one shard.
-        move_segments(conf, first_stage, dir_name)
-    else:
-        first_stage(conf)
+    all_files = mine(conf)
+    if conf.will_split:
+        assert all_files
+        assert all(d.is_dir() for d in all_files)
+        all_dirs = all_files
+        if "split_by_lang" in conf.pipeline:
+            # Only try regrouping if we split the shards.
+            regroup(conf, all_dirs)
+        elif "split_by_segment" in conf.pipeline:
+            # If we split by segment then regrouping is trivial, since segments appear in only one shard.
+            move_segments(conf, all_dirs)
 
     if conf.config_name == "test":
-        regroup_dir = conf._get_dir(dir_name, regroup=True)
-        _validate_test(conf, regroup_dir)
+        _validate_test(conf, conf.get_mined_dir(regroup=True))
 
 
 if __name__ == "__main__":

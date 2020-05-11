@@ -50,16 +50,16 @@ The full mining pipeline is divided in 3 steps:
 - `regroup` regroup the files created by `mine` in chunks of 4Gb
 
 Each step needs the previous step to be over before starting.
-You can launch the full pipeline using `python -m cc_net mine`.
+You can launch the full pipeline using `python -m cc_net`.
 
-* `python -m cc_net mine --help` shows help
-* `python -m cc_net mine --dump 2019-13` downloads a specific snapshot
-* `python -m cc_net mine -l my -l gu` 
+* `python -m cc_net --help` shows help
+* `python -m cc_net --dump 2019-13` treats a specific snapshot
+* `python -m cc_net -l my -l gu` 
 restricts to specific languages
-* `python -m cc_net mine --lm_dir my_lms/` uses custom LMs
-* `python -m cc_net mine --lang_threshold 0.3` set a specific field in `mine.Config`
-* `python -m cc_net mine --config test` runs on a tiny subset of a snapshot
-* `python -m cc_net mine --config config/my_config.json` uses configuration from the given config file
+* `python -m cc_net --lm_dir my_lms/` uses custom LMs
+* `python -m cc_net --lang_threshold 0.3` set a specific field in `mine.Config`
+* `python -m cc_net --config test` runs on a tiny subset of a snapshot
+* `python -m cc_net --config config/my_config.json` uses configuration from the given config file
 
 ## Reproducing our work
 
@@ -67,7 +67,7 @@ Given the CPU required to run the full pipeline on such a big corpus we share a 
 You can reconstruct the corpus used in the paper by using:
 
 ```sh
-python -m cc_net reproduce --dump 2019-09
+python -m cc_net --conf reproduce --dump 2019-09
 ```
 
 ## Adapting to your infrastructure
@@ -117,7 +117,7 @@ __Sample JSON object__:
 ```
 
 You can peak at those files using UNIX tools `zcat` and [`jq`](https://stedolan.github.io/jq/manual/), eg:
-`zcat data/regroup/2019-09/en_head_0000.json.gz | head -1 | jq .`
+`zcat data/mined/2019-09/en_head_0000.json.gz | head -1 | jq .`
 
 `jq` can do some complicated filtering.
 `jsonql.py` provides a Python API with multiprocess support to do more complicated operations like LM scoring of the document.
@@ -126,16 +126,3 @@ You can peak at those files using UNIX tools `zcat` and [`jq`](https://stedolan.
 
 By contributing to `cc_net`, you agree that your contributions will be licensed
 under the LICENSE file in the root directory of this source tree.
-
-
-## Output
-
-```
-data/mined_by_segment/{dump}
-  seg_000_000.json.gz
-  seg_000_001.json.gz
-  seg_000_002.json.gz
-
-data/reproduce_by_lang/{dump}
-  en_head_0000.json.gz
-```
