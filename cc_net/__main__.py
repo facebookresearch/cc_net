@@ -9,13 +9,12 @@
 import func_argparse
 
 import cc_net.mine
-import cc_net.minify
 
 
 def main():
     parser = func_argparse.multi_argparser(
-        mine=cc_net.mine.get_main_parser(),
-        reproduce=func_argparse.func_argparser(cc_net.minify.reproduce),
+        mine=cc_net.mine.get_main_parser("mine"),
+        reproduce=cc_net.mine.get_main_parser("reproduce"),
     )
     func_argparse.parse_and_call(parser)
 

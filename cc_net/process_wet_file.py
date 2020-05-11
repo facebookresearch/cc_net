@@ -210,8 +210,8 @@ class CCShardReader(CCSegmentsReader):
         self,
         dump: str,
         shard: int,
-        num_shards: int,
-        num_segments_per_shard: int = -1,
+        num_shards: int = -1,
+        num_segments_per_shard: int = 40,
         min_len: int = 300,
         cache_dir: Path = None,
     ):

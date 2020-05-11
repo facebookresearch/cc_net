@@ -126,3 +126,16 @@ You can peak at those files using UNIX tools `zcat` and [`jq`](https://stedolan.
 
 By contributing to `cc_net`, you agree that your contributions will be licensed
 under the LICENSE file in the root directory of this source tree.
+
+
+## Output
+
+```
+data/mined_by_segment/{dump}
+  seg_000_000.json.gz
+  seg_000_001.json.gz
+  seg_000_002.json.gz
+
+data/reproduce_by_lang/{dump}
+  en_head_0000.json.gz
+```

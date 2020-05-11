@@ -18,7 +18,7 @@ from typing_extensions import Protocol
 
 
 class Executor(Protocol):
-    def __call__(self, function: Callable[..., Optional[str]], *args: Iterable) -> None:
+    def __call__(self, function: Callable[..., str], *args: Iterable) -> None:
         ...
 
 
@@ -88,7 +88,7 @@ def get_submitit_executor(
         **options,
     )
 
-    def submit_and_wait(function: Callable[..., Optional[str]], *args: Iterable):
+    def submit_and_wait(function: Callable[..., str], *args: Iterable):
         f_name = function.__name__
 
         assert len(args) > 0, f"No arguments passed to {f_name}"
@@ -105,15 +105,12 @@ def get_submitit_executor(
         print(f"Started {f_name} in job array {job_array_id} ({len(jobs)} jobs).")
         for job in submitit.helpers.as_completed(jobs):
             done += 1
-            print(f"Finished job {job.job_id} ({done} / {total}).")
             e = job.exception()
             if not e:
-                message = job.result()
-                if message is not None:
-                    print(message)
+                print(f"Finished job {job.job_id} ({done} / {total}).", job.result())
                 continue
 
-            print(f"Failed job {job.job_id}:", e)
+            print(f"Failed job {job.job_id} ({done} / {total}):", e)
             failed_jobs.append(job)
 
         if failed_jobs:
@@ -137,7 +134,7 @@ def debug_executor(function: Callable[..., Optional[str]], *args: Iterable) -> N
             message = function(*x)
         except Exception:
             try:
-                import ipdb as pdb
+                import ipdb as pdb  # type: ignore
             except ImportError:
                 import pdb  # type: ignore
             import traceback
