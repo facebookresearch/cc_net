@@ -7,6 +7,7 @@
 
 import io
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pytest
@@ -136,43 +137,46 @@ def test_custom_pipe():
     assert get_output(transformer, data, sep="_") == "0_hello\n1_world\n"
 
 
-def test_smart_open(tmp_path: Path):
-    def readlines(filename: Path):
-        with jsonql.smart_open(filename) as f:
-            return list(jsonql.lines(f))
+def test_open_read_write(tmp_path: Path):
+    def _lines(filename: Path) -> Sequence[str]:
+        # jsonql.lines calls open_read
+        return list(jsonql.lines(filename))
 
     tmp = tmp_path
-    with jsonql.smart_open(tmp / "a.txt", "w") as o:
+    with jsonql.open_write(tmp / "a.txt") as o:
         print("a", file=o)
-    assert readlines(tmp / "a.txt") == ["a"]
+    assert _lines(tmp / "a.txt") == ["a"]
 
-    # with jsonql.smart_open(tmp / "a.json.z"), "w") as o:
-    #     print("a", file=o)
-    # assert readlines(tmp / "a.json.z ==)), ["a"]
+    jsonql.write_jsons([{"a": 1}], tmp / "a.txt")
+    assert _lines(tmp / "a.txt") == ['{"a": 1}']
 
-    with jsonql.smart_open([tmp / "a0.txt", tmp / "a1.txt"], "w") as o:
+    with jsonql.open_write(tmp / "a.gz") as o:
         print("a", file=o)
-    assert readlines(tmp / "a0.txt") == ["a"]
+    assert _lines(tmp / "a.gz") == ["a"]
+
+    with jsonql.open_write([tmp / "a0.txt", tmp / "a1.txt"]) as o:
+        print("a", file=o)
+    assert _lines(tmp / "a0.txt") == ["a"]
     assert not (tmp / "a1.txt").is_file()
 
-    with jsonql.smart_open([tmp / "b0.txt", tmp / "b1.txt"], "w", max_size="1k") as o:
+    with jsonql.open_write([tmp / "b0.txt", tmp / "b1.txt"], max_size="1k") as o:
         print("0" * 2000, file=o)
         print("1" * 2000, file=o)
-    assert readlines(tmp / "b0.txt") == ["0" * 2000]
-    assert readlines(tmp / "b1.txt") == ["1" * 2000]
+    assert _lines(tmp / "b0.txt") == ["0" * 2000]
+    assert _lines(tmp / "b1.txt") == ["1" * 2000]
 
-    with jsonql.smart_open(tmp / "a_????.json", "w") as o:
+    with jsonql.open_write(tmp / "a_????.json") as o:
         print("a", file=o)
-    assert readlines(tmp / "a_0000.json") == ["a"]
+    assert _lines(tmp / "a_0000.json") == ["a"]
     assert not (tmp / "a_0001.json").is_file()
-    assert readlines(tmp / "a_*.json") == ["a"]
+    assert _lines(tmp / "a_*.json") == ["a"]
 
-    with jsonql.smart_open(tmp / "b_??.json", "w", max_size="1k") as o:
+    with jsonql.open_write(tmp / "b_??.json", max_size="1k") as o:
         print("0" * 2000, file=o)
         print("1" * 2000, file=o)
-    assert readlines(tmp / "b_00.json") == ["0" * 2000]
-    assert readlines(tmp / "b_01.json") == ["1" * 2000]
-    assert readlines(tmp / "b_*.json") == ["0" * 2000, "1" * 2000]
+    assert _lines(tmp / "b_00.json") == ["0" * 2000]
+    assert _lines(tmp / "b_01.json") == ["1" * 2000]
+    assert _lines(tmp / "b_*.json") == ["0" * 2000, "1" * 2000]
 
 
 def test_split_file(tmp_path: Path):
@@ -221,31 +225,26 @@ def test_split_file_middle_of_char(tmp_path: Path):
 
 def test_blocked_gzip(tmp_path: Path):
     file = tmp_path / "test.gz"
+    f = str(file)
     # Each object is 10/11 bytes long. We have 2 of them by block.
-    content = [f'{{"xx": {i}}}' for i in range(80)]
+    content = ['{"xx": %d}' % i for i in range(80)]
     with jsonql.BlockedGzipWriter(file, "wt", block_size="20B") as o:
         for line in content:
             print(line, file=o)
 
-    with jsonql.JsonReader(strict=True) as jr:
-        with jsonql.smart_open(file) as f:
-            read_as_one_file = list(jr.map(f))
+    jr = jsonql.JsonReader(strict=True)
+    expected = list(jr.map(content))
+    # read as one file
+    assert expected == list(jsonql.read_jsons(file))
+    # read first block
+    assert expected[:2] == list(jsonql.read_jsons(f + "[0/40]"))
+    # read last block
+    assert expected[-2:] == list(jsonql.read_jsons(f + "[39/40]"))
 
-        expected = list(jr.map(content))
-        assert expected == read_as_one_file
-
-        with jsonql.smart_open(str(file) + "[0/40]") as f:
-            reader = list(f)
-        assert expected[:2] == list(jr.map(l for l in reader))
-
-        with jsonql.smart_open(str(file) + "[39/40]") as f:
-            reader = list(f)
-        assert expected[-2:] == list(jr.map(l for l in reader))
-
-        readers = jsonql.get_block_readers(file, 9)
-        read_as_several_files = [list(jr.map(r)) for r in readers]
-        # 40 splits of 2 docs, 9 readers -> 5 splits, 10 docs per reader
-        assert list(jsonql.grouper(expected, 10)) == read_as_several_files
+    readers = jsonql.get_block_readers(file, 9)
+    read_as_several_files = [list(jsonql.read_jsons(r)) for r in readers]
+    # 40 splits of 2 docs, 9 readers -> 5 splits, 10 docs per reader
+    assert list(jsonql.grouper(expected, 10)) == read_as_several_files
 
 
 def test_enter_exit(capsys):

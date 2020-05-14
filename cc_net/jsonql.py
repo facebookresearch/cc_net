@@ -43,13 +43,12 @@ from typing import (
     Tuple,
     Union,
     cast,
-    overload,
 )
 
 import numpy as np
 import psutil  # type: ignore
 import requests
-from typing_extensions import Literal, Protocol
+from typing_extensions import Protocol
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,10 +60,8 @@ NEWLINE = " N3WL1N3 "
 
 FilterFn = Callable[[dict], bool]
 FileDescriptor = Union[Path, List[Path], str]
-OwnedFile = Union["SimpleIO", None]
-WritableFileLike = Union[FileDescriptor, OwnedFile]
-ReadableFileLike = Union[Iterable[str], Iterable[dict], "SimpleIO", FileDescriptor]
-FileLike = Union[WritableFileLike, ReadableFileLike]
+WritableFileLike = Union[FileDescriptor, TextIO, None]
+ReadableFileLike = Union[Iterable, FileDescriptor, None]
 
 
 def io_parser():
@@ -385,7 +382,10 @@ class Mapper(Transformer):
 
 
 def run_pipe(
-    command, kwargs: dict = None, file: FileLike = None, output: WritableFileLike = None
+    command,
+    kwargs: dict = None,
+    file: ReadableFileLike = None,
+    output: WritableFileLike = None,
 ):
     kwargs = kwargs or {}
     if isinstance(kwargs, argparse.ArgumentParser):
@@ -398,7 +398,7 @@ def run_pipe(
 
 def run_pipes(
     *fns: Callable,
-    file: FileLike = None,
+    file: ReadableFileLike = None,
     output: WritableFileLike = None,
     processes: int = 0,
     chunksize: int = 10_000,
@@ -417,9 +417,9 @@ def run_pipes(
 
     log = logging.getLogger(__name__).info
 
-    with smart_open(file, "r") as f, smart_open(output, "w") as o:
+    with open_write(output) as text_o:  # type: ignore
+        f: Iterable[str] = open_read(file)  # type: ignore
         # SimpleIO implements "write" so print works, but not all the IO methods.
-        text_o = cast(TextIO, o)
         # suppress BrokenPipeError to allow running inside a unix pipe.
         with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
             if not transformers:
@@ -479,32 +479,32 @@ def _global_transformer(document: str) -> Optional[dict]:
     return _GLOBAL_TRANSFORMER(document)
 
 
-def lines(file: Iterable[str]) -> Iterable[str]:
-    return (line.rstrip("\n") if type(line) is str else line for line in file)
+def lines(file: ReadableFileLike) -> Iterator[str]:
+    return (line.strip("\n") for line in open_read(file))
 
 
-def json_stdin() -> Iterable[dict]:
-    return JsonReader().map(sys.stdin)
-
-
-def read_jsons(
-    file: Union[FileDescriptor, Iterable[str], Iterable[dict]], strict=False
-) -> Iterator[dict]:
-    with smart_open(file) as f:
-        yield from _read_jsons(f)
-
-
-def _read_jsons(
-    lines: Union[Iterable[str], Iterable[dict]], strict=False
-) -> Iterator[dict]:
+def read_jsons(file: ReadableFileLike, strict=False) -> Iterator[dict]:
     reader = JsonReader(strict=strict)
-
-    for line in reader.map(lines):
+    lines = open_read(file)
+    for line in lines:
         if line is None:
             continue
-        yield line
+        yield reader(line)
 
     reader.log_summary()
+
+
+def write_jsons(source: Iterable[dict], file: WritableFileLike) -> None:
+    with open_write(file) as o:
+        for res in source:
+            if res is None:
+                continue
+            if isinstance(res, dict):
+                json.dump(res, o, ensure_ascii=False)
+                continue
+            if isinstance(res, str):
+                res = res.rstrip("\n")
+            print(res, file=o)
 
 
 class JsonReader(Transformer):
@@ -734,7 +734,7 @@ class split(Transformer):
         if o is None:
             if self.mkdir:
                 Path(filename).parent.mkdir(parents=True, exist_ok=True)
-            self.o[filename] = smart_open(filename, "w")
+            self.o[filename] = open_write(filename)
         print(json.dumps(doc, ensure_ascii=False), file=self.o[filename], flush=True)
 
     def summary(self):
@@ -952,12 +952,6 @@ class SimpleIO(Protocol):
     def write(self, line: str) -> int:
         ...
 
-    def __next__(self) -> str:
-        ...
-
-    def __iter__(self) -> Iterator[str]:
-        ...
-
     def __enter__(self) -> "SimpleIO":
         ...
 
@@ -965,101 +959,95 @@ class SimpleIO(Protocol):
         ...
 
 
-@overload
-def smart_open(
-    filename: Iterable[dict], *, max_size: str = "4G"
-) -> ContextManager[Iterable[dict]]:
-    ...
+def open_read(filename: ReadableFileLike) -> Iterable[str]:
+    """Open the given file, list of files or files matching the given glob and read lines.
+
+        `filename` is None or "-" -> reads from stdin
+        `filename` is a Path / str -> interprets filename as a glob and open files matching it
+        `filename` is a list -> opens sequentially all files from the list using `open_read`
+        `filename` is something else -> returns the object wrapped in a `nullcontext`
+            This allows to pass already openened files or iterables.
+
+        `open_read` will decompress gzip files, given they have ".gz" suffix.
+    """
+    if filename is None:
+        return sys.stdin
+
+    if isinstance(filename, list):
+        assert isinstance(filename[0], Path)
+        if len(filename) == 0:
+            return []
+        if len(filename) > 1:
+            return _yield_from(filename)
+        filename = cast(Path, filename[0])
+    if isinstance(filename, str):
+        if filename.startswith("http://") or filename.startswith("https://"):
+            return open_remote_file(filename)
+        filename = Path(filename)
+    if not isinstance(filename, Path):
+        # we might have received an iterable, return it unmodified.
+        return filename  # type: ignore
+
+    # Expand glob patterns only when reading
+    files = [Path(f) for f in sorted(glob.glob(str(filename)))]
+    if len(files) > 1:
+        return _yield_from(files)
+    if len(files) == 1:
+        filename = files[0]
+
+    assert isinstance(filename, Path)
+    mode = "rt"
+    logging.getLogger(__name__).info(f"Opening {filename} with mode {mode}")
+    if filename.suffix == ".gz":
+        return gzip.open(filename, mode)
+
+    if filename.name.endswith("]"):
+        return block_reader(filename)
+    return open(filename, mode)
 
 
-@overload
-def smart_open(
-    filename: Union[FileDescriptor, Iterable[str], "SimpleIO", None],
-    *,
-    max_size: str = "4G",
-) -> ContextManager[Iterable[str]]:
-    ...
+def _yield_from(files: list) -> Iterable[str]:
+    for file in files:
+        yield from open_read(file)
 
 
-@overload
-def smart_open(
-    filename: FileLike, mode: Literal["r"], max_size: str = "4G"
-) -> ContextManager[Iterable[str]]:
-    ...
-
-
-@overload
-def smart_open(
-    filename: WritableFileLike, mode: Literal["w"], max_size: str = "4G"
-) -> SimpleIO:
-    ...
-
-
-def smart_open(
-    filename: FileLike, mode: str = "r", max_size: str = "4G"
-) -> Union[SimpleIO, ContextManager[ReadableFileLike]]:
+def open_write(
+    filename: WritableFileLike, max_size: str = "4G"
+) -> ContextManager[TextIO]:
     """Open the given file, list of files or files matching the given glob.
 
     The return value is a ContextManager meant to be used inside a `with` block:
     ```
-    with smart_open("foo.txt", "r") as f:
+    with open_write("foo.txt") as o:
         ...
-
-    Read mode:
-        `filename` is None or "-" -> returns stdin/stdout depending on the mode
-        `filename` is a Path / str -> interprets filename as a glob and open files matching it
-        `filename` is a list -> opens sequentially all files from the list using `smart_open`
-        `filename` is something else -> returns the object wrapped in a `nullcontext`
-            This allows to pass already openened files or iterables.
-
-        `smart_open` will decompress gzip files, given they have ".gz" files.
 
     Write mode:
         replaces "?" from filename by numbers ranging from 0 to 9, generatings files of size `max_size`.
         If filename ends with ".gz", creates a blocked gzip file with random access.
     """
     if filename is None:
-        return contextlib.nullcontext(sys.stdin if "r" in mode else sys.stdout)
+        return contextlib.nullcontext(sys.stdout)
 
     if isinstance(filename, list):
         if len(filename) > 1:
-            return MultiFile(filename, mode, max_size)
+            return MultiFile(filename, "w", max_size)
         else:
             filename = cast(Path, filename[0])
     if isinstance(filename, str):
-        if filename.startswith("http://") or filename.startswith("https://"):
-            return open_remote_file(filename, mode)
         filename = Path(filename)
     if not isinstance(filename, Path):
         return contextlib.nullcontext(filename)
 
-    # Expand glob patterns only when reading
-    if "r" in mode:
-        files = [Path(f) for f in sorted(glob.glob(str(filename)))]
-        if len(files) > 1:
-            return MultiFile(files, mode, max_size)
-        if len(files) == 1:
-            filename = files[0]
-
-    assert isinstance(filename, Path)
+    mode = "wt"
     if "?" in filename.name:
         return sharded_file(filename, mode, max_size)
 
     logging.getLogger(__name__).info(f"Opening {filename} with mode {mode}")
     # TODO: should we use another format ?
     if filename.suffix == ".gz":
-        # In python std lib the default mode is binary for gzip, but `smart_open`
-        # defaults to text.
-        if "r" in mode:
-            if "b" not in mode and "t" not in mode:
-                mode += "t"
-            return gzip.open(filename, mode)
-        else:
-            return BlockedGzipWriter(Path(filename), mode, block_size="64M")
+        return BlockedGzipWriter(Path(filename), mode, block_size="64M")
 
-    if filename.name.endswith("]"):
-        return contextlib.nullcontext(block_reader(filename, mode))
-    return open(filename, mode)
+    return open(filename, "wt")
 
 
 def parse_size(size):
@@ -1072,7 +1060,7 @@ def parse_size(size):
 
 
 class MultiFile(SimpleIO):
-    def __init__(self, files: Iterable[Path], mode="r", max_size="4G"):
+    def __init__(self, files: Iterable[Path], mode="w", max_size="4G"):
         self.name = str(files)
         self.mode = mode
         self.files = iter(files)
@@ -1080,25 +1068,6 @@ class MultiFile(SimpleIO):
         self.current_handle: Optional[TextIO] = None
         self.current_block_size = 0
         self._open_next_handle()  # Opening 1st handle allows to write directly.
-
-    def __next__(self) -> str:
-        assert self.current_handle is not None
-        line = self.current_handle.__next__()
-        while line is None:
-            line = self.current_handle.__next__()
-            self._open_next_handle()
-            if self.current_handle is None:
-                raise StopIteration()
-        return line
-
-    def __iter__(self):
-        # The first handle is opened in the constructor.
-        assert self.current_handle is not None
-        while True:
-            for line in self.current_handle:
-                yield line
-            if not self._open_next_handle():
-                break
 
     def write(self, content) -> int:
         # Avoid splitting newlines to a new file.
@@ -1118,7 +1087,7 @@ class MultiFile(SimpleIO):
         if file is None:
             return False
 
-        self.current_handle = smart_open(file, mode=self.mode)
+        self.current_handle = open_write(file).__enter__()
         self.current_block_size = 0
         return True
 
@@ -1137,7 +1106,7 @@ class MultiFile(SimpleIO):
             return
 
         # log("Closing", self.current_handle.name, "with mode", self.current_handle.mode)
-        self.current_handle.close()
+        self.current_handle.__exit__(None, None, None)
         self.current_handle = None
 
 
@@ -1174,15 +1143,12 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
     return r.content
 
 
-def open_remote_file(
-    url: str, mode: str = "r", cache: Path = None
-) -> ContextManager[Iterable[str]]:
+def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
     """
-    assert "r" in mode, f"Can't open {url} with mode {mode}."
     if cache and cache.exists():
-        return smart_open(cache, mode="r")
+        return open_read(cache)
 
     # TODO: open the remote file in streaming mode.
     # The hard part is that we need to write the content on disk at the same time,
@@ -1275,8 +1241,7 @@ def get_block_readers(filename: Path, n_readers, mode="t"):
     return readers
 
 
-def block_reader(filename: Path, mode: str) -> Iterable[str]:
-    assert "r" == mode, f"Can only open block {filename} in mode 'r'"
+def block_reader(filename: Path) -> Iterable[str]:
     root, pattern = str(filename)[:-1].split("[", 1)
     assert root.endswith(".gz"), "Can only read block of a .gz file for now."
 

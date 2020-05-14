@@ -521,13 +521,12 @@ def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
     stats: Dict[str, dict] = {}
     for file in sorted(output_dir.glob("*.json.gz")):
         fname = "/".join((file.parent.name, file.name))
-        with jsonql.smart_open(file) as lines:
-            # The order of documents is not guaranteed inside a shard,
-            lines = sorted(lines)
-            content = "\n".join(lines)
-            size = len(content)
-            checksum = hashlib.sha1(bytes(content, encoding="utf-8")).hexdigest()
-            # first_document = json.loads(lines[0])
+        # The order of documents is not guaranteed inside a shard,
+        lines = sorted(jsonql.open_read(file))
+        content = "\n".join(lines)
+        size = len(content)
+        checksum = hashlib.sha1(bytes(content, encoding="utf-8")).hexdigest()
+        # first_document = json.loads(lines[0])
         stats[fname] = {"size": size, "checksum": checksum}
 
     def dump(x):

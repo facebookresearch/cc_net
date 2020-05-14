@@ -36,8 +36,8 @@ def cc_segments(dump_id: str, cache_dir: Path = None) -> List[str]:
     wet_paths = cc_wet_paths_url(dump_id)
     cache_dir = cache_dir or jsonql._tmp_dir()
     wet_paths_cache = cache_dir / f"wet_{dump_id}.paths.gz"
-    with jsonql.open_remote_file(wet_paths, cache=wet_paths_cache) as f:
-        return [segment.strip() for segment in f]
+    f = jsonql.open_remote_file(wet_paths, cache=wet_paths_cache)
+    return [segment.strip() for segment in f]
 
 
 def list_dumps() -> List[str]:
@@ -175,7 +175,7 @@ class CCSegmentsReader(Iterable[dict]):
     def segments(self) -> Sequence[str]:
         return self._segments
 
-    def open_segment(self, segment: str) -> ContextManager[Iterable[str]]:
+    def open_segment(self, segment: str) -> Iterable[str]:
         url = self.segment_url(segment)
         file: Optional[Path] = None
         if self.cache_dir:
@@ -190,11 +190,9 @@ class CCSegmentsReader(Iterable[dict]):
         for i, segment in enumerate(self.segments):
             start = time.time()
             # TODO: start downloading the next segment in the background
-            with self.open_segment(segment) as f:
-
-                for doc in parse_warc_file(iter(f), self.min_len):
-                    doc["cc_segment"] = segment
-                    yield doc
+            for doc in parse_warc_file(self.open_segment(segment), self.min_len):
+                doc["cc_segment"] = segment
+                yield doc
 
             if i + 1 >= n:
                 continue

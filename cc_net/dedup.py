@@ -450,9 +450,7 @@ def deduplicate(
 ) -> Iterable[dict]:
     """Remove duplicates of the given file (but keep the first occurence)."""
     dup_remover = DuplicatesRemover(field, [], collect=True)
-    with dup_remover, jsonql.smart_open(file) as f:
-        for doc in jsonql.read_jsons(f):
-            yield dup_remover(doc)
+    return dup_remover.map(jsonql.read_jsons(file))
 
 
 def deduplicate_two_pass(
@@ -471,9 +469,7 @@ def deduplicate_two_pass(
             jsonql.JsonReader(), HashesCollector(field, output=hash_file), file=file
         )
         dup_remover = DuplicatesRemover(field, [hash_file])
-        with dup_remover, jsonql.smart_open(file) as f:
-            for doc in jsonql.read_jsons(f):
-                yield dup_remover(doc)
+        return dup_remover.map(jsonql.read_jsons(file))
     finally:
         if hash_file.exists():
             hash_file.unlink()

@@ -112,7 +112,7 @@ Fiction is obliged to stick to possibilities. Truth isn't."""
     expected["line_ids"] = encode_line_ids(expected["line_ids"])  # type: ignore
     assert expected == mini
 
-    with jsonql.smart_open(tmp_path / "sample.json", "w") as o:
+    with jsonql.open_write(tmp_path / "sample.json") as o:
         print(json.dumps(mini), file=o)
     fetcher = minify.MetadataFetcher(tmp_path)
     # line_ids is removed when unminifying
@@ -137,7 +137,7 @@ def test_fetch(http_from_disk, tmp_path: Path):
             "bucket": "top_notch",
         },
     ]
-    with jsonql.smart_open(tmp_path / "sample.json", "w") as o:
+    with jsonql.open_write(tmp_path / "sample.json") as o:
         for mini in mini_docs:
             print(json.dumps(mini), file=o)
 

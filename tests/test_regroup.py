@@ -26,9 +26,7 @@ def check_regroup(tmp_path, regroup_fn, check_blocks_boundaries=False):
     duration = time.time() - start
     print(f"{regroup_fn.__module__}.{regroup_fn.__name__} took {duration}s")
 
-    with jsonql.smart_open(regroup_file) as f:
-        regrouped = list(jsonql.read_jsons(f))
-
+    regrouped = list(jsonql.read_jsons(regroup_file))
     assert [doc for shard in shards for doc in shard] == regrouped
 
     readers = jsonql.get_block_readers(regroup_file, n_shards)
@@ -38,10 +36,9 @@ def check_regroup(tmp_path, regroup_fn, check_blocks_boundaries=False):
         ]
         return
 
-    # TODO: this test doesn't work anymore, because I'm skipping index files for small files
-    # for shard, reader in zip(shards, readers):
-    #     block = [doc for doc in jsonql.read_jsons(reader)]
-    #     assert shard == block
+    for shard, reader in zip(shards, readers):
+        block = [doc for doc in jsonql.read_jsons(reader)]
+        assert shard == block
 
 
 def test_regroup(tmp_path):
