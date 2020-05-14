@@ -3,6 +3,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+from pathlib import Path
+
 from setuptools import setup  # type: ignore
 
 setup(
@@ -16,6 +18,8 @@ setup(
     keywords="common crawl dataset",
     url="https://github.com/facebookresearch/cc_net",
     license="CC-BY-NC-4.0",
+    long_description=Path("README.md").read_text(),
+    long_description_content_type="text/markdown",
     project_urls={
         "Bug Tracker": "https://github.com/facebookresearch/cc_net/issues",
         "Source Code": "https://github.com/facebookresearch/cc_net",
@@ -41,7 +45,8 @@ setup(
         "dev": ["mypy>=0.730", "pytest", "black", "isort"],
         # To use scripts inside cc_net/tools
         "tools": ["lxml", "sentence_splitter"],
-        # Allows to run on a SLURM cluster. Not open sourced yet.
+        # TODO: include submitit by default and use local executor
+        # Allows to run on a SLURM cluster.
         "slurm": ["submitit"],
         # Memory-efficient hashset.
         # This fork only compiles the kind of dict used by cc_net.
