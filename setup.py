@@ -39,15 +39,13 @@ setup(
         "func_argparse>=1.1.1",
         "psutil>=5.6.3",
         "sacremoses",
+        "submitit>=1.0.0",
         "typing_extensions",
     ],
     extras_require={
         "dev": ["mypy>=0.730", "pytest", "black", "isort"],
         # To use scripts inside cc_net/tools
         "tools": ["lxml", "sentence_splitter"],
-        # TODO: include submitit by default and use local executor
-        # Allows to run on a SLURM cluster.
-        "slurm": ["submitit"],
         # Memory-efficient hashset.
         # This fork only compiles the kind of dict used by cc_net.
         # Full version is at https://github.com/atom-moyer/getpy
