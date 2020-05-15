@@ -1,7 +1,6 @@
 {
     "dump": "2019-09",
     "mined_dir": "mini_by_segment",
-    "num_shards": 1600,
     "pipeline": [
         "dedup",
         "lid",

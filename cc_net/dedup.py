@@ -338,15 +338,17 @@ class HashesCollector(jsonql.Transformer):
         self.field = field
         self.output = output
         self.hashes = FlatHashSet() if hashes is None else hashes
+        self.num_hashes_end = 0
         self.num_hashes_start = len(self.hashes)
 
     def summary(self) -> List[str]:
         summ = super().summary()
-        h = (len(self.hashes) - self.num_hashes_start) // 1000
+        h = self.num_hashes_end if self.hashes is None else len(self.hashes)
+        h = (h - self.num_hashes_start) // 1000
         max_mem = mem_footprint_gb()
         n = self.n_lines // 1000
         summ.append(
-            f"Found {h:_}k unique hashes over {n:_} lines. Using {max_mem:.1f}GB of RAM."
+            f"Found {h:_}k unique hashes over {n:_}k lines. Using {max_mem:.1f}GB of RAM."
         )
         return summ
 
@@ -361,8 +363,10 @@ class HashesCollector(jsonql.Transformer):
         if self.output and self.hashes:
             self.hashes.dump(self.output)
             self.log(f"Saved {len(self.hashes)} hashes to {self.output}")
+            # Save the number of hashes.
+            self.num_hashes_end = len(self.hashes)
             # Free up mem even if the transformer is kept somewhere else.
-            self.hashes = FlatHashSet()
+            self.hashes = None  # type: ignore
 
 
 class DuplicatesRemover(jsonql.Transformer):

@@ -72,8 +72,12 @@ python -m cc_net --conf reproduce --dump 2019-09
 
 ## Adapting to your infrastructure
 
-Given the computation cost of running the full pipeline we distributes the computation on a SLURM cluster using the private submitit package.
-`execution.py` also contains code to run the code using `multiprocessing` library by passing `--execution mp` to commands.
+Given the computation cost of running the full pipeline we distributed the computation
+on a [Slurm](https://slurm.schedmd.com/) cluster using [submitit](https://github.com/facebookincubator/submitit).
+`submitit` will default to spawning processes on your machine if Slurm cluster is found.
+You should tweak `--task_parallelism` to something adapated to your machine.
+Defaults are 512 for mining and 20 for reproducing.
+
 To run the tasks in-process use `--execution debug`.
 
 
@@ -90,7 +94,7 @@ __List of fields__:
 - nlines: number of lines
 - source_domain: web domain of the webpage
 - title: page title (part of CC)
-- raw_content: webpage content after deduplication (part of CC)
+- raw_content: webpage content after deduplication
 - original_nlines: number of lines before deduplication
 - original_length: number of chars before deduplication
 - language: language detected by FastText LID
