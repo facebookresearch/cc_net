@@ -26,13 +26,12 @@ import re
 import sys
 import tempfile
 import time
+import typing as tp
 import warnings
 import zlib
 from pathlib import Path
 from typing import (
-    Any,
     Callable,
-    ContextManager,
     Dict,
     Iterable,
     Iterator,
@@ -42,7 +41,6 @@ from typing import (
     TextIO,
     Tuple,
     Union,
-    cast,
 )
 
 import numpy as np
@@ -60,8 +58,8 @@ NEWLINE = " N3WL1N3 "
 
 FilterFn = Callable[[dict], bool]
 FileDescriptor = Union[Path, List[Path], str]
-WritableFileLike = Union[FileDescriptor, TextIO, None]
-ReadableFileLike = Union[Iterable, FileDescriptor, None]
+WritableFileLike = Union[FileDescriptor, TextIO, "SimpleIO", None]
+ReadableFileLike = Union[Iterable[str], FileDescriptor, None]
 
 
 def io_parser():
@@ -397,14 +395,28 @@ def run_pipe(
 
 
 def run_pipes(
-    *fns: Callable,
+    *fns: Union[Transformer, Callable[[Iterable], Iterable]],
+    inputs: Iterable[dict] = None,
     file: ReadableFileLike = None,
     output: WritableFileLike = None,
-    processes: int = 0,
+    processes: int = 1,
     chunksize: int = 10_000,
 ):
+    """
+    Run full document processing pipeline.
+
+    - fns: list of functions to run over the documents. Can be:
+        * `Iterable -> Iterable` function
+        * jsonql.Transformer instance
+        Using transformers allow the pipeline to process documents in parallel.
+    - inputs: iterable to read the documents from
+    - file: if inputs is not given, will read documents from this file.
+    - output: writable file like.
+    - processes: number of processes to use. Run on one process by default.
+    - chunksize: chunksize for multiprocessing.Pool.imap_unordered
+    """
     expect_json = len(fns) and isinstance(fns[0], Transformer) and fns[0].expect_json
-    if expect_json:
+    if expect_json and inputs is None:
         fns = (JsonReader(),) + fns
     transformers = []
     for t in fns:
@@ -416,47 +428,38 @@ def run_pipes(
     pipes = fns[len(transformers) :]
 
     log = logging.getLogger(__name__).info
+    if inputs is None:
+        data: Iterable = open_read(file)
+    else:
+        data = inputs
 
-    with open_write(output) as text_o:  # type: ignore
-        f: Iterable[str] = open_read(file)  # type: ignore
-        # SimpleIO implements "write" so print works, but not all the IO methods.
-        # suppress BrokenPipeError to allow running inside a unix pipe.
-        with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
-            if not transformers:
-                results: Iterable = f
+    with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
+        if transformers:
+            log(f"preparing {transformers}")
+            transform = stack.enter_context(compose(transformers))
+            if processes <= 1:
+                data = transform.map(data)
             else:
-                log(f"preparing {transformers}")
-                transform = stack.enter_context(compose(transformers))
-                if processes <= 0:
-                    results = transform.map(f)
-                else:
-                    p = multiprocessing.current_process()
-                    log(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
-                    pool = stack.enter_context(
-                        multiprocessing.Pool(
-                            processes=processes,
-                            initializer=_set_global_transformer,
-                            initargs=(transform,),
-                        )
+                p = multiprocessing.current_process()
+                log(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
+                pool = stack.enter_context(
+                    multiprocessing.Pool(
+                        processes=processes,
+                        initializer=_set_global_transformer,
+                        initargs=(transform,),
                     )
-                    results = pool.imap_unordered(
-                        _global_transformer, f, chunksize=chunksize
-                    )
+                )
+                data = pool.imap_unordered(
+                    _global_transformer, data, chunksize=chunksize
+                )
 
-            for fn in pipes:
-                if isinstance(fn, Transformer):
-                    results = fn.map(results)
-                else:
-                    results = fn(results)
+        for fn in pipes:
+            if isinstance(fn, Transformer):
+                data = fn.map(data)
+            else:
+                data = fn(data)
 
-            for res in results:
-                if res is None:
-                    continue
-                if type(res) == dict:
-                    res = json.dumps(res, ensure_ascii=False)
-                if isinstance(res, str):
-                    res = res.rstrip("\n")
-                print(res, file=text_o, flush=True)
+        write_jsons(data, output)
 
 
 # Allows to share transformer acroos subprocess.
@@ -495,12 +498,14 @@ def read_jsons(file: ReadableFileLike, strict=False) -> Iterator[dict]:
 
 
 def write_jsons(source: Iterable[dict], file: WritableFileLike) -> None:
+    eol = os.linesep
     with open_write(file) as o:
         for res in source:
             if res is None:
                 continue
             if isinstance(res, dict):
                 json.dump(res, o, ensure_ascii=False)
+                o.write(eol)
                 continue
             if isinstance(res, str):
                 res = res.rstrip("\n")
@@ -681,7 +686,7 @@ def merge(lines, columns, separator="\t", newline=NEWLINE):
 
     def parse(line):
         parts = line.split(separator, len(columns) - 1)
-        doc: Dict[str, Any] = {}
+        doc: Dict[str, tp.Any] = {}
         for i, value in enumerate(parts):
             if columns[i] == "_":
                 doc.update(read_json(parts[doc_index]))
@@ -979,7 +984,7 @@ def open_read(filename: ReadableFileLike) -> Iterable[str]:
             return []
         if len(filename) > 1:
             return _yield_from(filename)
-        filename = cast(Path, filename[0])
+        filename = tp.cast(Path, filename[0])
     if isinstance(filename, str):
         if filename.startswith("http://") or filename.startswith("https://"):
             return open_remote_file(filename)
@@ -1013,7 +1018,7 @@ def _yield_from(files: list) -> Iterable[str]:
 
 def open_write(
     filename: WritableFileLike, max_size: str = "4G"
-) -> ContextManager[TextIO]:
+) -> tp.ContextManager[TextIO]:
     """Open the given file, list of files or files matching the given glob.
 
     The return value is a ContextManager meant to be used inside a `with` block:
@@ -1032,11 +1037,14 @@ def open_write(
         if len(filename) > 1:
             return MultiFile(filename, "w", max_size)
         else:
-            filename = cast(Path, filename[0])
+            filename = tp.cast(Path, filename[0])
     if isinstance(filename, str):
         filename = Path(filename)
     if not isinstance(filename, Path):
-        return contextlib.nullcontext(filename)
+        assert hasattr(filename, "write"), f"{filename} doesn't have a .write method."
+        # We return a 'TextIO' even though we only check for `.write` method,
+        # this works better with eg `print`.
+        return contextlib.nullcontext(tp.cast(TextIO, filename))
 
     mode = "wt"
     if "?" in filename.name:
@@ -1297,7 +1305,7 @@ class BlockedGzipWriter(MultiFile):
         we just write the end of block sequence."""
         if not self.current_handle:
             mode = self.mode + "t"
-            self.current_handle = cast(TextIO, gzip.open(self.filename, mode))
+            self.current_handle = tp.cast(TextIO, gzip.open(self.filename, mode))
             assert isinstance(self.current_handle.buffer, gzip.GzipFile)
             self.zipfile = self.current_handle.buffer
             return True

@@ -254,7 +254,7 @@ def _hashes_shard(conf: Config, shard: int, output: Path):
     tmp_output = tmp(output)
     jsonql.run_pipes(
         dedup.HashesCollector(field="raw_content", output=tmp_output),
-        file=conf.get_cc_shard(shard),
+        inputs=conf.get_cc_shard(shard),
     )
     finalize(tmp_output, output)
     return f"Hashed {output}"
@@ -403,7 +403,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
 
     jsonql.run_pipes(
         *pipeline,
-        file=cc_shard,
+        inputs=cc_shard,
         processes=conf.mine_num_processes,
         chunksize=100,
         # The splitter takes care of writing to files.

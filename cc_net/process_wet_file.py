@@ -155,7 +155,7 @@ def dl(
         num_segments_per_shard: manual control of the number of segment per shard.
     """
     reader = CCShardReader(dump, shard, num_shards, num_segments_per_shard)
-    jsonql.run_pipes(file=reader, output=output)
+    jsonql.run_pipes(inputs=reader, output=output)
     logger.info(f"Done. {output} is ready.")
 
 
