@@ -412,7 +412,7 @@ def run_pipes(
     - inputs: iterable to read the documents from
     - file: if inputs is not given, will read documents from this file.
     - output: writable file like.
-    - processes: number of processes to use. Run on one process by default.
+    - processes: number of processes to use. -1 means all CPU available.
     - chunksize: chunksize for multiprocessing.Pool.imap_unordered
     """
     expect_json = len(fns) and isinstance(fns[0], Transformer) and fns[0].expect_json
@@ -432,6 +432,9 @@ def run_pipes(
         data: Iterable = open_read(file)
     else:
         data = inputs
+
+    if processes == -1:
+        processes = os.cpu_count() or 0
 
     with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
         if transformers:

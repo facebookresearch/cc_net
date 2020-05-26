@@ -28,6 +28,7 @@ class Executor(Protocol):
 class SubmititRetryOnTimeout(submitit.helpers.Checkpointable):
     def __init__(self, fn: Callable):
         self.fn = fn
+        self.__name__ = fn.__name__
 
     def __call__(self, *args, **kwargs):
         return self.fn(*args, **kwargs)
