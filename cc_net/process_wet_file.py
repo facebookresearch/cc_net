@@ -82,7 +82,12 @@ Content-Length: 7743
         logger.warning("Can't parse header:", e, headers, doc)
         return None
 
-    title, doc = doc[0], doc[1:]
+    # Docs are separated by two empty lines.
+    last = None
+    if not doc[-1] and not doc[-2]:
+        last = -2
+    title, doc = doc[0], doc[1:last]
+
     return {
         "url": url,
         "date_download": date,
@@ -113,8 +118,7 @@ def group_by_docs(warc_lines: Iterable[str]) -> Iterable[dict]:
             headers, doc, read_headers = [warc], [], True
             continue
 
-        if warc:
-            doc.append(warc)
+        doc.append(warc)
 
     # Return the last document
     if doc:
