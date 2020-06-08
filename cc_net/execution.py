@@ -15,9 +15,8 @@ import warnings
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Sized
 
-from typing_extensions import Protocol
-
 import submitit
+from typing_extensions import Protocol
 
 
 class Executor(Protocol):

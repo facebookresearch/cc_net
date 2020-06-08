@@ -133,15 +133,6 @@ def get_parser():
     )
 
     add_subparser(
-        append,
-        {
-            "--column": dict(type=str, required=True),
-            "--bin_file": dict(type=str, required=True),
-            "--dtype": dict(type=str, default="float32"),
-        },
-    )
-
-    add_subparser(
         describe,
         {
             "columns": dict(nargs="*", help=""),
@@ -753,48 +744,6 @@ class split(Transformer):
     def close(self):
         for file in self.o.values():
             file.close()
-
-
-class append(Transformer):
-    """Add a field by reading from a binary file."""
-
-    # TODO: remove. This seems way too specific.
-    def __init__(self, column, bin_file, dtype="float32"):
-        super().__init__()
-        self.column = column
-        self.bin_files = sorted(glob.glob(bin_file))
-        # HACK removes valid / test set from training set
-        if len(self.bin_files) > 100:
-            self.bin_files = self.bin_files[2:]
-        assert len(self.bin_files) > 0
-        self.dtype = dtype
-
-        self.shard = 0
-        self.i = 0
-        self.values: np.ndarray = []
-        self.values_skipped = 0
-
-    def do(self, document):
-        if self.i == len(self.values):
-            if self.shard == len(self.bin_files):
-                self.values_skipped += 1
-                return
-            self.log(f"Append will read {self.bin_files[self.shard]}")
-            self.values = np.fromfile(self.bin_files[self.shard], dtype=self.dtype)
-            self.shard += 1
-            self.i = 0
-        i = self.i
-        self.i += 1
-
-        document[self.column] = float(self.values[i])
-        return document
-
-    def summary(self):
-        r = self.processed / len(self.values) if len(self.values) else 0
-        n_shards = len(self.bin_files)
-        return [
-            f"Processed {self.processed:_d} documents ({r:5.2%}) shard {self.shard} / {n_shards}. Skipped {self.values_skipped:_d}"
-        ]
 
 
 def histogram(values, bins, weights):
