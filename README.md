@@ -20,7 +20,7 @@ If you found these resources useful, please consider citing:
 
 We only tried this on Linux but installation should be possible on MacOS too.
 
-To install prerequisites on Ubuntu: `sudo apt-get install libboost-all-dev cmake libeigen3-dev liblzma-dev`
+To install prerequisites on Ubuntu: `sudo apt-get install libboost-all-dev cmake libeigen3-dev liblzma-dev unzip python3.7`
 
 1. Create or simlink a `data` folder to where you want to download the corpus.
 
