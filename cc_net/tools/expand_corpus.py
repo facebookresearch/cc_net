@@ -20,10 +20,10 @@ from typing import Iterable, List, Optional, Set, Tuple
 import func_argparse
 import submitit
 from kenlm import Model as KenlmModel  # type: ignore
+from sentence_splitter import SentenceSplitter  # type: ignore
 from sentencepiece import SentencePieceProcessor  # type: ignore
 
 from cc_net import dedup, jsonql, perplexity, text_normalizer
-from sentence_splitter import SentenceSplitter  # type: ignore
 
 KENLM = Path("./bin/lmplz")
 KENLM_BUILD = Path("./bin/build_binary")

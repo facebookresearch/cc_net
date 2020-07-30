@@ -43,7 +43,7 @@ setup(
         "typing_extensions",
     ],
     extras_require={
-        "dev": ["mypy>=0.730", "pytest", "black", "isort"],
+        "dev": ["mypy>=0.730", "pytest", "black", "isort>=5.0.0"],
         # To use scripts inside cc_net/tools
         "tools": ["lxml", "sentence_splitter"],
         # Memory-efficient hashset.
