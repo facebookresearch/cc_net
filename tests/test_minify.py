@@ -133,7 +133,7 @@ def test_fetch(http_from_disk, tmp_path: Path):
             "url": "http://sample_english.com",
             "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
             "cc_segment": "crawl-data/sample.warc.wet",
-            "line_ids": encode_line_ids([2]),
+            "line_ids": encode_line_ids([3]),
             "bucket": "top_notch",
         },
     ]
