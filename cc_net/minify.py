@@ -23,7 +23,6 @@ HASH_TYPE = np.uint32
 
 PUBLIC_FIELDS = ["url", "digest"]
 COMPUTED_FIELDS = ["cc_segment", "language", "language_score", "bucket", "perplexity"]
-CC_NET_ROOT_FOLDER = "https://dl.fbaipublicfiles.com/cc_net/"
 DATA = Path(__file__).parent.parent / "data"
 
 

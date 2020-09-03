@@ -79,7 +79,7 @@ class Config(NamedTuple):
     execution: str = "slurm"
     num_shards: int = 1600
     num_segments_per_shard: int = -1
-    metadata: Optional[Path] = None
+    metadata: Optional[str] = None
     min_len: int = 300
     hash_in_mem: int = 50
     lang_whitelist: Sequence[str] = []
@@ -128,8 +128,10 @@ class Config(NamedTuple):
 
     @classmethod
     def from_json(cls, json_file: Path) -> "Config":
-        json_config = json.loads(json_file.read_text())
-        path_keys = ["cache_dir", "lm_dir", "metadata", "output_dir"]
+        raw_lines = json_file.read_text().splitlines()
+        raw_lines = [l for l in raw_lines if not l.strip().startswith("//")]
+        json_config = json.loads("".join(raw_lines))
+        path_keys = ["cache_dir", "lm_dir", "output_dir"]
         for key in path_keys:
             if key in json_config:
                 json_config[key] = Path(json_config[key])
@@ -170,6 +172,7 @@ REPRODUCE_CONFIG = Config(
     mined_dir="reproduce",
     pipeline=["fetch_metadata", "split_by_lang"],
     execution="local",
+    metadata="https://dl.fbaipublicfiles.com/cc_net/1.0.0",
 )
 
 TEST_CONFIG = BASE_CONFIG._replace(
@@ -388,7 +391,9 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     if "fetch_metadata" in conf.pipeline:
         # TODO: better default
         assert conf.metadata is not None
-        steps["fetch_metadata"] = minify.MetadataFetcher(f"{conf.metadata}/{conf.dump}")
+        steps["fetch_metadata"] = minify.MetadataFetcher(
+            f"{conf.metadata}/{conf.dump}/"
+        )
 
     steps["minify"] = minify.Minifier()
 

@@ -940,6 +940,7 @@ def open_read(filename: ReadableFileLike) -> Iterable[str]:
     if isinstance(filename, str):
         if filename.startswith("http://") or filename.startswith("https://"):
             return open_remote_file(filename)
+
         filename = Path(filename)
     if not isinstance(filename, Path):
         # we might have received an iterable, return it unmodified.
