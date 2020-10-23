@@ -20,7 +20,7 @@ from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 import func_argparse
 
@@ -76,7 +76,7 @@ class Config(NamedTuple):
     dump: str = "2017-51"
     output_dir: Path = Path("data")
     mined_dir: str = "mined"
-    execution: str = "slurm"
+    execution: str = "auto"
     num_shards: int = 1600
     num_segments_per_shard: int = -1
     metadata: Optional[str] = None
@@ -91,7 +91,7 @@ class Config(NamedTuple):
     mine_num_processes: int = 16
     target_size: str = "4G"
     cleanup_after_regroup: bool = True
-    task_parallelism: int = 500
+    task_parallelism: int = -1
     pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
@@ -171,7 +171,6 @@ REPRODUCE_CONFIG = Config(
     config_name="reproduce",
     mined_dir="reproduce",
     pipeline=["fetch_metadata", "split_by_lang"],
-    execution="local",
     metadata="https://dl.fbaipublicfiles.com/cc_net/1.0.0",
 )
 
@@ -306,11 +305,7 @@ def mine(conf: Config) -> List[Path]:
     if not missing_outputs:
         return outputs
 
-    # Compute hashes firsts.
-    hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
-
     mined_dir.mkdir(parents=True, exist_ok=True)
-
     ex = conf.get_executor(
         f"mine_{conf.dump}",
         mem_gb=mem_gb,
@@ -318,9 +313,15 @@ def mine(conf: Config) -> List[Path]:
         cpus=conf.mine_num_processes + 1,
     )
 
-    hashes_files = [
-        hashes_groups[shard // conf.hash_in_mem] for shard, o in missing_outputs
-    ]
+    # Compute hashes firsts.
+    if "dedup" in conf.pipeline:
+        hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
+        hashes_files: Iterable[List[Path]] = [
+            hashes_groups[shard // conf.hash_in_mem] for shard, o in missing_outputs
+        ]
+    else:
+        hashes_files = repeat([])
+
     ex(_mine_shard, repeat(conf), hashes_files, *_transpose(missing_outputs))
 
     assert all(o.exists() for o in outputs)

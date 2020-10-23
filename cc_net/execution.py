@@ -54,7 +54,19 @@ def get_executor(
         execution_mode = "local"
 
     cluster = None if execution_mode == "auto" else execution_mode
-    ex = submitit.AutoExecutor(log_dir, cluster=execution_mode)
+    # use submitit to detect which executor is available
+    ex = submitit.AutoExecutor(log_dir, cluster=cluster)
+
+    if ex.cluster == "local":
+        # LocalExecutor doesn't respect task_parallelism
+        return functools.partial(custom_map_array, ex, task_parallelism)
+    if ex.cluster == "debug":
+        return debug_executor
+
+    # We are on slurm
+    if task_parallelism == -1:
+        task_parallelism = 500
+
     ex.update_parameters(
         name=name,
         timeout_min=int(timeout_hour * 60),
@@ -63,12 +75,6 @@ def get_executor(
         slurm_array_parallelism=task_parallelism,
         **options,
     )
-    if ex.cluster == "local":
-        # LocalExecutor doesn't respect task_parallelism
-        return functools.partial(custom_map_array, ex, task_parallelism)
-    if ex.cluster == "debug":
-        return debug_executor
-
     return functools.partial(map_array_and_wait, ex)
 
 
@@ -149,7 +155,10 @@ def custom_map_array(
 
     jobs_args = list(zip(*args))
     total = len(jobs_args)
-    print(f"Submitting {total} jobs for {f_name}, with parallelism={parallelism}")
+    if parallelism < 0:
+        parallelism = os.cpu_count() or 0
+    assert parallelism >= 0, f"Can't run any jobs with task_parallelism={parallelism}"
+    print(f"Submitting {total} jobs for {f_name}, with task_parallelism={parallelism}")
     enqueued = 0
     done = 0
     running_jobs: List[submitit.Job] = []
