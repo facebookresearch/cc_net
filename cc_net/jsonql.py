@@ -919,13 +919,13 @@ class SimpleIO(Protocol):
 def open_read(filename: ReadableFileLike) -> Iterable[str]:
     """Open the given file, list of files or files matching the given glob and read lines.
 
-        `filename` is None or "-" -> reads from stdin
-        `filename` is a Path / str -> interprets filename as a glob and open files matching it
-        `filename` is a list -> opens sequentially all files from the list using `open_read`
-        `filename` is something else -> returns the object wrapped in a `nullcontext`
-            This allows to pass already openened files or iterables.
+    `filename` is None or "-" -> reads from stdin
+    `filename` is a Path / str -> interprets filename as a glob and open files matching it
+    `filename` is a list -> opens sequentially all files from the list using `open_read`
+    `filename` is something else -> returns the object wrapped in a `nullcontext`
+        This allows to pass already openened files or iterables.
 
-        `open_read` will decompress gzip files, given they have ".gz" suffix.
+    `open_read` will decompress gzip files, given they have ".gz" suffix.
     """
     if filename is None:
         return sys.stdin
@@ -954,14 +954,22 @@ def open_read(filename: ReadableFileLike) -> Iterable[str]:
         filename = files[0]
 
     assert isinstance(filename, Path)
-    mode = "rt"
-    logging.getLogger(__name__).info(f"Opening {filename} with mode {mode}")
-    if filename.suffix == ".gz":
-        return gzip.open(filename, mode)
 
     if filename.name.endswith("]"):
         return block_reader(filename)
-    return open(filename, mode)
+
+    logging.getLogger(__name__).info(f"Opening {filename} with mode 'rt'")
+    if filename.suffix == ".gz":
+        file: TextIO = gzip.open(filename, "rt")  # type: ignore
+    else:
+        file = open(filename, "rt")
+
+    return _close_when_exhausted(file)
+
+
+def _close_when_exhausted(file: TextIO) -> Iterable[str]:
+    with file:
+        yield from file
 
 
 def _yield_from(files: list) -> Iterable[str]:
