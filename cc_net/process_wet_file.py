@@ -57,15 +57,15 @@ def ls():
 
 def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
     """Headers format is:
-WARC/1.0
-WARC-Type: conversion
-WARC-Target-URI: [url]
-WARC-Date: [crawldate: 2019-02-15T19:15:59Z]
-WARC-Record-ID: <urn:uuid:8865156e-d5f1-4734-9c68-4b46eaf2bb7e>
-WARC-Refers-To: <urn:uuid:340152e2-65cf-4143-b522-8ce4e2d069d7>
-WARC-Block-Digest: sha1:S3DTWCONT2L6ORTGCY2KXEZ37LNBB7V2
-Content-Type: text/plain
-Content-Length: 7743
+    WARC/1.0
+    WARC-Type: conversion
+    WARC-Target-URI: [url]
+    WARC-Date: [crawldate: 2019-02-15T19:15:59Z]
+    WARC-Record-ID: <urn:uuid:8865156e-d5f1-4734-9c68-4b46eaf2bb7e>
+    WARC-Refers-To: <urn:uuid:340152e2-65cf-4143-b522-8ce4e2d069d7>
+    WARC-Block-Digest: sha1:S3DTWCONT2L6ORTGCY2KXEZ37LNBB7V2
+    Content-Type: text/plain
+    Content-Length: 7743
     """
     if not headers or not doc:
         return None

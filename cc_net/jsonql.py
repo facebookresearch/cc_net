@@ -250,7 +250,7 @@ class Transformer:
         return y
 
     def do(self, x):
-        raise NotImplemented(f"'do' not implemented in {type(self)}")
+        raise NotImplementedError(f"'do' not implemented in {type(self)}")
 
     def summary(self) -> List[str]:
         return [self.speed_summary()]
