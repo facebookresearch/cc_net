@@ -1125,7 +1125,7 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     raw_bytes = request_get_content(url)
     content = io.BytesIO(raw_bytes)
     if url.endswith(".gz"):
-        f = gzip.open(content, mode="rt")
+        f: TextIO = gzip.open(content, mode="rt")  # type: ignore
     else:
         f = io.TextIOWrapper(content)
 
@@ -1138,7 +1138,7 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
         else:
             tmp_cache.unlink()
 
-    return f
+    return _close_when_exhausted(f)
 
 
 def sharded_file(file_pattern: Path, mode: str, max_size: str = "4G") -> MultiFile:
