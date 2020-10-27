@@ -31,7 +31,8 @@ from cc_net import split_by_lang
 from cc_net.execution import Executor
 
 # Constant
-CUTOFF_CSV = Path(__file__).parent / "data" / "cutoff.csv"
+FILE_DIR = Path(__file__).parent
+CUTOFF_CSV = FILE_DIR / "data" / "cutoff.csv"
 
 DEFAULT_PIPELINE = [
     "dedup",
@@ -61,6 +62,7 @@ class Config(NamedTuple):
     lang_whitelist: only treat those languages
     lang_blacklist: ignore those languages
     lang_threshold: remove docs whose top language score is lower than this
+    keep_bucket: keep only those perplexity bucket chose from (head, middle, tail, all)
     lm_dir: folder containing LMs
     lm_languages: only use LMs for the following languages
     cutoff: cutoff file to use for split in head/middle/tail
@@ -85,6 +87,7 @@ class Config(NamedTuple):
     lang_whitelist: Sequence[str] = []
     lang_blacklist: Sequence[str] = []
     lang_threshold: float = 0.5
+    keep_bucket: Sequence[str] = []
     lm_dir: Path = Path("data/lm_sp")
     cutoff: Path = CUTOFF_CSV
     lm_languages: Optional[Sequence[str]] = None
@@ -169,9 +172,23 @@ BYLANG_CONFIG = Config(
 
 REPRODUCE_CONFIG = Config(
     config_name="reproduce",
+    dump="2019-09",
     mined_dir="reproduce",
-    pipeline=["fetch_metadata", "split_by_lang"],
+    pipeline=["fetch_metadata", "keep_lang", "keep_bucket", "split_by_lang"],
     metadata="https://dl.fbaipublicfiles.com/cc_net/1.0.0",
+    # Optional filtering:
+    # It won't change much the execution speed, but decreases the disk requirement.
+    # Restrict languages
+    lang_whitelist=["fr"],
+    # Restrict perplexity buckets
+    # Top languages have been split in perplexity buckets according
+    # to a Wikipedia trained LM.
+    # The buckets from low perplexity (good) to high (bad) are:
+    # ["head", "middle", "tail"]
+    # Languages without a LM have only one bucket "all".
+    # It won't change much the execution speed, but decreases the disk requirement.
+    keep_bucket=["head", "all"],
+    mine_num_processes=1,
 )
 
 TEST_CONFIG = BASE_CONFIG._replace(
@@ -389,6 +406,12 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     steps["pp_bucket"] = perplexity.PerplexityBucket(CUTOFF_CSV)
     steps["drop"] = perplexity.DropKeys(tok_field)
 
+    steps["keep_bucket"] = None
+    if conf.keep_bucket:
+        steps["keep_bucket"] = jsonql.where(
+            [lambda doc: doc.get("bucket", "all") in conf.keep_bucket]
+        )
+
     if "fetch_metadata" in conf.pipeline:
         # TODO: better default
         assert conf.metadata is not None
@@ -540,7 +563,7 @@ def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
 
     print("*** Stats ***")
     stats_raw = dump(stats)
-    stats_file = Path(__file__).parent / "data" / "test_stats.json"
+    stats_file = FILE_DIR / "data" / "test_stats.json"
     if generate:
         print("Saving stats to", stats_file)
         stats_file.write_text(stats_raw)

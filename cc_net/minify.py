@@ -113,6 +113,7 @@ class MetadataFetcher(jsonql.Transformer):
         self._segments: Set[str] = set()
         self.read_doc = 0
         self.missed_doc = 0
+        self.missed_par = 0
         self.processed_par = 0
 
         if isinstance(folder, str):
@@ -173,7 +174,12 @@ class MetadataFetcher(jsonql.Transformer):
     def clean(self, metadata: dict, full_doc: dict) -> Optional[dict]:
         line_ids = decode_line_ids(metadata.pop("line_ids"))
         lines = full_doc["raw_content"].split("\n")
-        cleaned = [lines[l] for l in line_ids]
+        cleaned = []
+        for l in line_ids:
+            if l >= len(lines) or l < 0:
+                self.missed_par += 1
+                continue
+            cleaned.append(lines[l])
 
         self.processed_par += len(line_ids)
         if not cleaned:
@@ -199,6 +205,10 @@ class MetadataFetcher(jsonql.Transformer):
         if self.missed_doc:
             r = self.missed_doc / self.processed
             summ.append(f"! Missed {self.missed_doc} documents ({r:.1%}) !")
+
+        if self.missed_par:
+            r = self.missed_par / self.processed
+            summ.append(f"! Missed {self.missed_par} paragraphs ({r:.1%}) !")
         return summ
 
 
