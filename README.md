@@ -70,6 +70,30 @@ You can reconstruct the corpus used in the paper by using:
 python -m cc_net --conf reproduce --dump 2019-09
 ```
 
+## Extract XLM-R data
+
+[Unsupervised Cross-lingual Representation Learning at Scale (XLM-RoBERTa)](https://arxiv.org/pdf/1911.02116.pdf)
+paper was trained on data extracted by an internal version of cc_net.
+
+Due to the format being a little bit different please use the following command instead:
+
+```sh
+python cc_net/tools/dl_cc_100.py --help
+python cc_net/tools/dl_cc_100.py --outdir data_cc100 --process 8
+```
+
+If you use this version of the data please also consider citing:
+
+```bibtex
+@article{conneau2019unsupervised,
+  title={Unsupervised Cross-lingual Representation Learning at Scale},
+  author={Conneau, Alexis and Khandelwal, Kartikay and Goyal, Naman and Chaudhary, Vishrav and Wenzek, Guillaume and Guzm{\'a}n, Francisco and Grave, Edouard and Ott, Myle and Zettlemoyer, Luke and Stoyanov, Veselin},
+  journal={arXiv preprint arXiv:1911.02116},
+  year={2019}
+}
+```
+
+
 ## Adapting to your infrastructure
 
 Given the computation cost of running the full pipeline we distributed the computation
