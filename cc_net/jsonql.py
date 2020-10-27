@@ -11,6 +11,7 @@ Manipulate files containing one json per line.
 import argparse
 import collections
 import contextlib
+import functools
 import glob
 import gzip
 import importlib
@@ -21,18 +22,16 @@ import json
 import logging
 import multiprocessing
 import os
-import platform
 import re
-import resource
 import sys
+import tempfile
 import time
+import typing as tp
 import warnings
 import zlib
 from pathlib import Path
 from typing import (
-    Any,
     Callable,
-    ContextManager,
     Dict,
     Iterable,
     Iterator,
@@ -42,13 +41,12 @@ from typing import (
     TextIO,
     Tuple,
     Union,
-    cast,
-    overload,
 )
 
 import numpy as np
+import psutil  # type: ignore
 import requests
-from typing_extensions import Literal, Protocol
+from typing_extensions import Protocol
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,15 +54,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M",
 )
 
-RUSAGE_UNIT = 1000 if platform.system() == "Linux" else 1
 NEWLINE = " N3WL1N3 "
 
 FilterFn = Callable[[dict], bool]
 FileDescriptor = Union[Path, List[Path], str]
-OwnedFile = Union["SimpleIO", None]
-WritableFileLike = Union[FileDescriptor, OwnedFile]
-ReadableFileLike = Union[Iterable[str], Iterable[dict], "SimpleIO"]
-FileLike = Union[WritableFileLike, ReadableFileLike]
+WritableFileLike = Union[FileDescriptor, TextIO, "SimpleIO", None]
+ReadableFileLike = Union[Iterable[str], FileDescriptor, None]
 
 
 def io_parser():
@@ -134,15 +129,6 @@ def get_parser():
             "--newline": dict(
                 default=NEWLINE, help="Replace the given string by actual newlines"
             ),
-        },
-    )
-
-    add_subparser(
-        append,
-        {
-            "--column": dict(type=str, required=True),
-            "--bin_file": dict(type=str, required=True),
-            "--dtype": dict(type=str, default="float32"),
         },
     )
 
@@ -264,7 +250,7 @@ class Transformer:
         return y
 
     def do(self, x):
-        raise NotImplemented(f"'do' not implemented in {type(self)}")
+        raise NotImplementedError(f"'do' not implemented in {type(self)}")
 
     def summary(self) -> List[str]:
         return [self.speed_summary()]
@@ -278,7 +264,7 @@ class Transformer:
     def log(self, message):
         self._logger.info(message)
 
-    def log_summary(self):
+    def log_summary(self) -> None:
         if not self.ready:
             self.log("Not ready.")
             return
@@ -287,10 +273,13 @@ class Transformer:
             self.log(line)
         self.__last_log = time.time()
 
-    def map(self, source):
+    def map(self, source: Iterable) -> Iterator:
         if self.ready:
             for x in source:
                 yield self(x)
+            # since we have been prepared by caller,
+            # caller is also responsible for calling `close`.
+            return
         else:
             with self:
                 for x in source:
@@ -311,10 +300,10 @@ class Transformer:
         # the object so we need to initialize everything.
         self.__enter__()
 
-    def _prepare(self):
+    def _prepare(self) -> None:
         pass
 
-    def __enter__(self):
+    def __enter__(self) -> "Transformer":
         # In multiprocessing __enter__ is always called twice, so we are idempotent.
         # Because we call __enter__ when deserializing this transformer and
         # also when the parent transformer is deserialized.
@@ -382,7 +371,10 @@ class Mapper(Transformer):
 
 
 def run_pipe(
-    command, kwargs: dict = None, file: FileLike = None, output: WritableFileLike = None
+    command,
+    kwargs: dict = None,
+    file: ReadableFileLike = None,
+    output: WritableFileLike = None,
 ):
     kwargs = kwargs or {}
     if isinstance(kwargs, argparse.ArgumentParser):
@@ -394,12 +386,29 @@ def run_pipe(
 
 
 def run_pipes(
-    *fns: Callable,
-    file: FileLike = None,
+    *fns: Union[Transformer, Callable[[Iterable], Iterable]],
+    inputs: Iterable[dict] = None,
+    file: ReadableFileLike = None,
     output: WritableFileLike = None,
-    processes: int = 0,
+    processes: int = 1,
     chunksize: int = 10_000,
 ):
+    """
+    Run full document processing pipeline.
+
+    - fns: list of functions to run over the documents. Can be:
+        * `Iterable -> Iterable` function
+        * jsonql.Transformer instance
+        Using transformers allow the pipeline to process documents in parallel.
+    - inputs: iterable to read the documents from
+    - file: if inputs is not given, will read documents from this file.
+    - output: writable file like.
+    - processes: number of processes to use. -1 means all CPU available.
+    - chunksize: chunksize for multiprocessing.Pool.imap_unordered
+    """
+    expect_json = len(fns) and isinstance(fns[0], Transformer) and fns[0].expect_json
+    if expect_json and inputs is None:
+        fns = (JsonReader(),) + fns
     transformers = []
     for t in fns:
         if not isinstance(t, Transformer):
@@ -409,88 +418,92 @@ def run_pipes(
         transformers.append(t)
     pipes = fns[len(transformers) :]
 
-    if transformers and transformers[0].expect_json:
-        transformers.insert(0, JsonReader())
-
     log = logging.getLogger(__name__).info
+    if inputs is None:
+        data: Iterable = open_read(file)
+    else:
+        data = inputs
 
-    with smart_open(file, "r") as f, smart_open(output, "w") as o:
-        # SimpleIO implements "write" so print works, but not all the IO methods.
-        text_o = cast(TextIO, o)
-        # suppress BrokenPipeError to allow running inside a unix pipe.
-        with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
-            if not transformers:
-                results: Iterable = f
+    if processes == -1:
+        processes = os.cpu_count() or 0
+
+    with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
+        if transformers:
+            log(f"preparing {transformers}")
+            transform = stack.enter_context(compose(transformers))
+            if processes <= 1:
+                data = transform.map(data)
             else:
-                log(f"preparing {transformers}")
-                transform = stack.enter_context(compose(transformers))
-                if processes <= 0:
-                    results = transform.map(f)
-                else:
-                    p = multiprocessing.current_process()
-                    log(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
-                    pool = stack.enter_context(
-                        multiprocessing.Pool(
-                            processes=processes,
-                            initializer=set_global_transformer,
-                            initargs=(transform,),
-                        )
+                p = multiprocessing.current_process()
+                log(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
+                pool = stack.enter_context(
+                    multiprocessing.Pool(
+                        processes=processes,
+                        initializer=_set_global_transformer,
+                        initargs=(transform,),
                     )
-                    results = pool.imap_unordered(
-                        global_transformer, f, chunksize=chunksize
-                    )
+                )
+                data = pool.imap_unordered(
+                    _global_transformer, data, chunksize=chunksize
+                )
 
-            for fn in pipes:
-                if isinstance(fn, Transformer):
-                    results = fn.map(results)
-                else:
-                    results = fn(results)
+        for fn in pipes:
+            if isinstance(fn, Transformer):
+                data = fn.map(data)
+            else:
+                data = fn(data)
 
-            for res in results:
-                if res is None:
-                    continue
-                if type(res) == dict:
-                    res = json.dumps(res, ensure_ascii=False)
-                if isinstance(res, str):
-                    res = res.rstrip("\n")
-                print(res, file=text_o, flush=True)
+        write_jsons(data, output)
 
 
-GLOBAL_TRANSFORMER: Optional[Transformer] = None
+# Allows to share transformer acroos subprocess.
+# Used by `run_pipes`
+_GLOBAL_TRANSFORMER: Optional[Transformer] = None
 
 
-def set_global_transformer(transformer: Transformer):
-    global GLOBAL_TRANSFORMER
+def _set_global_transformer(transformer: Transformer):
+    global _GLOBAL_TRANSFORMER
     p = multiprocessing.current_process()
     logging.info(
         f"Started subprocess {p.name}:{p.pid} from {os.getppid()} for {transformer}"
     )
     assert transformer.ready, f"{transformer} isn't ready"
-    GLOBAL_TRANSFORMER = transformer
+    _GLOBAL_TRANSFORMER = transformer
 
 
-def global_transformer(document: str) -> Optional[dict]:
-    assert GLOBAL_TRANSFORMER is not None
-    return GLOBAL_TRANSFORMER(document)
+def _global_transformer(document: str) -> Optional[dict]:
+    assert _GLOBAL_TRANSFORMER is not None
+    return _GLOBAL_TRANSFORMER(document)
 
 
-def lines(file: Iterable[str]) -> Iterable[str]:
-    return (line.rstrip("\n") if type(line) is str else line for line in file)
+def lines(file: ReadableFileLike) -> Iterator[str]:
+    return (line.strip("\n") for line in open_read(file))
 
 
-def json_stdin() -> Iterable[dict]:
-    return JsonReader().map(sys.stdin)
-
-
-def read_jsons(lines: Iterable[str], strict=False) -> Iterator[dict]:
+def read_jsons(file: ReadableFileLike, strict=False) -> Iterator[dict]:
     reader = JsonReader(strict=strict)
-
-    for line in reader.map(lines):
+    lines = open_read(file)
+    for line in lines:
         if line is None:
             continue
-        yield line
+        yield reader(line)
 
     reader.log_summary()
+
+
+def write_jsons(source: Iterable[dict], file: WritableFileLike) -> None:
+    eol = os.linesep
+    with open_write(file) as o:
+        for res in source:
+            if res is None:
+                continue
+            if isinstance(res, dict):
+                json.dump(res, o, ensure_ascii=False)
+                o.write(eol)
+                continue
+            if isinstance(res, str):
+                res = res.rstrip("\n")
+            print(res, file=o)
 
 
 class JsonReader(Transformer):
@@ -667,7 +680,7 @@ def merge(lines, columns, separator="\t", newline=NEWLINE):
 
     def parse(line):
         parts = line.split(separator, len(columns) - 1)
-        doc: Dict[str, Any] = {}
+        doc: Dict[str, tp.Any] = {}
         for i, value in enumerate(parts):
             if columns[i] == "_":
                 doc.update(read_json(parts[doc_index]))
@@ -690,19 +703,25 @@ class split(Transformer):
     # Not parallelisable since we are writing to files.
     parallelisable = False
 
-    def __init__(self, pattern=None, split_fn=None, mkdir=False):
+    def __init__(
+        self,
+        pattern: Union[Path, str] = None,
+        split_fn: Callable[[dict], str] = None,
+        mkdir: bool = False,
+    ):
         super().__init__()
-        assert pattern or split_fn, "split need either a pattern or a split_fn"
         assert not (
             pattern and split_fn
         ), "split can't have both a pattern and a split_fn"
-        self.split_fn = split_fn or self.make_split_fn(pattern)
+        if split_fn is not None:
+            self.split_fn = split_fn
+        else:
+            assert pattern, "split need either a pattern or a split_fn"
+            self.split_fn = self.make_split_fn(str(pattern))
         self.mkdir = mkdir
         self.o: dict = {}
 
-    def make_split_fn(self, pattern):
-        if isinstance(pattern, Path):
-            pattern = str(pattern)
+    def make_split_fn(self, pattern: str) -> Callable[[dict], str]:
         candidates = list(re.findall(r"(?i:\{([_a-z][_a-z0-9]*)\})", pattern))
         return lambda doc: pattern.format(**{c: doc[c] for c in candidates})
 
@@ -714,7 +733,7 @@ class split(Transformer):
         if o is None:
             if self.mkdir:
                 Path(filename).parent.mkdir(parents=True, exist_ok=True)
-            self.o[filename] = smart_open(filename, "w")
+            self.o[filename] = open_write(filename)
         print(json.dumps(doc, ensure_ascii=False), file=self.o[filename], flush=True)
 
     def summary(self):
@@ -725,48 +744,6 @@ class split(Transformer):
     def close(self):
         for file in self.o.values():
             file.close()
-
-
-class append(Transformer):
-    """Add a field by reading from a binary file."""
-
-    # TODO: remove. This seems way too specific.
-    def __init__(self, column, bin_file, dtype="float32"):
-        super().__init__()
-        self.column = column
-        self.bin_files = sorted(glob.glob(bin_file))
-        # HACK removes valid / test set from training set
-        if len(self.bin_files) > 100:
-            self.bin_files = self.bin_files[2:]
-        assert len(self.bin_files) > 0
-        self.dtype = dtype
-
-        self.shard = 0
-        self.i = 0
-        self.values: np.ndarray = []
-        self.values_skipped = 0
-
-    def do(self, document):
-        if self.i == len(self.values):
-            if self.shard == len(self.bin_files):
-                self.values_skipped += 1
-                return
-            self.log(f"Append will read {self.bin_files[self.shard]}")
-            self.values = np.fromfile(self.bin_files[self.shard], dtype=self.dtype)
-            self.shard += 1
-            self.i = 0
-        i = self.i
-        self.i += 1
-
-        document[self.column] = float(self.values[i])
-        return document
-
-    def summary(self):
-        r = self.processed / len(self.values) if len(self.values) else 0
-        n_shards = len(self.bin_files)
-        return [
-            f"Processed {self.processed:_d} documents ({r:5.2%}) shard {self.shard} / {n_shards}. Skipped {self.values_skipped:_d}"
-        ]
 
 
 def histogram(values, bins, weights):
@@ -932,12 +909,6 @@ class SimpleIO(Protocol):
     def write(self, line: str) -> int:
         ...
 
-    def __next__(self) -> str:
-        ...
-
-    def __iter__(self) -> Iterator[str]:
-        ...
-
     def __enter__(self) -> "SimpleIO":
         ...
 
@@ -945,101 +916,107 @@ class SimpleIO(Protocol):
         ...
 
 
-@overload
-def smart_open(
-    filename: Iterable[dict], *, max_size: str = "4G"
-) -> ContextManager[Iterable[dict]]:
-    ...
+def open_read(filename: ReadableFileLike) -> Iterable[str]:
+    """Open the given file, list of files or files matching the given glob and read lines.
+
+    `filename` is None or "-" -> reads from stdin
+    `filename` is a Path / str -> interprets filename as a glob and open files matching it
+    `filename` is a list -> opens sequentially all files from the list using `open_read`
+    `filename` is something else -> returns the object wrapped in a `nullcontext`
+        This allows to pass already openened files or iterables.
+
+    `open_read` will decompress gzip files, given they have ".gz" suffix.
+    """
+    if filename is None:
+        return sys.stdin
+
+    if isinstance(filename, list):
+        assert isinstance(filename[0], Path)
+        if len(filename) == 0:
+            return []
+        if len(filename) > 1:
+            return _yield_from(filename)
+        filename = tp.cast(Path, filename[0])
+    if isinstance(filename, str):
+        if filename.startswith("http://") or filename.startswith("https://"):
+            return open_remote_file(filename)
+
+        filename = Path(filename)
+    if not isinstance(filename, Path):
+        # we might have received an iterable, return it unmodified.
+        return filename  # type: ignore
+
+    # Expand glob patterns only when reading
+    files = [Path(f) for f in sorted(glob.glob(str(filename)))]
+    if len(files) > 1:
+        return _yield_from(files)
+    if len(files) == 1:
+        filename = files[0]
+
+    assert isinstance(filename, Path)
+
+    if filename.name.endswith("]"):
+        return block_reader(filename)
+
+    logging.getLogger(__name__).info(f"Opening {filename} with mode 'rt'")
+    if filename.suffix == ".gz":
+        file: TextIO = gzip.open(filename, "rt")  # type: ignore
+    else:
+        file = open(filename, "rt")
+
+    return _close_when_exhausted(file)
 
 
-@overload
-def smart_open(
-    filename: Union[FileDescriptor, Iterable[str], "SimpleIO", None],
-    *,
-    max_size: str = "4G",
-) -> ContextManager[Iterable[str]]:
-    ...
+def _close_when_exhausted(file: TextIO) -> Iterable[str]:
+    with file:
+        yield from file
 
 
-@overload
-def smart_open(
-    filename: FileLike, mode: Literal["r"], max_size: str = "4G"
-) -> ContextManager[Iterable[str]]:
-    ...
+def _yield_from(files: list) -> Iterable[str]:
+    for file in files:
+        yield from open_read(file)
 
 
-@overload
-def smart_open(
-    filename: WritableFileLike, mode: Literal["w"], max_size: str = "4G"
-) -> SimpleIO:
-    ...
-
-
-def smart_open(
-    filename: FileLike, mode: str = "r", max_size: str = "4G"
-) -> Union[SimpleIO, ContextManager[ReadableFileLike]]:
+def open_write(
+    filename: WritableFileLike, max_size: str = "4G"
+) -> tp.ContextManager[TextIO]:
     """Open the given file, list of files or files matching the given glob.
 
     The return value is a ContextManager meant to be used inside a `with` block:
     ```
-    with smart_open("foo.txt", "r") as f:
+    with open_write("foo.txt") as o:
         ...
-
-    Read mode:
-        `filename` is None or "-" -> returns stdin/stdout depending on the mode
-        `filename` is a Path / str -> interprets filename as a glob and open files matching it
-        `filename` is a list -> opens sequentially all files from the list using `smart_open`
-        `filename` is something else -> returns the object wrapped in a `nullcontext`
-            This allows to pass already openened files or iterables.
-
-        `smart_open` will decompress gzip files, given they have ".gz" files.
 
     Write mode:
         replaces "?" from filename by numbers ranging from 0 to 9, generatings files of size `max_size`.
         If filename ends with ".gz", creates a blocked gzip file with random access.
     """
     if filename is None:
-        return contextlib.nullcontext(sys.stdin if "r" in mode else sys.stdout)
+        return contextlib.nullcontext(sys.stdout)
 
     if isinstance(filename, list):
         if len(filename) > 1:
-            return MultiFile(filename, mode, max_size)
+            return MultiFile(filename, "w", max_size)
         else:
-            filename = cast(Path, filename[0])
+            filename = tp.cast(Path, filename[0])
     if isinstance(filename, str):
-        if filename.startswith("http://") or filename.startswith("https://"):
-            return open_remote_file(filename, mode)
         filename = Path(filename)
     if not isinstance(filename, Path):
-        return contextlib.nullcontext(filename)
+        assert hasattr(filename, "write"), f"{filename} doesn't have a .write method."
+        # We return a 'TextIO' even though we only check for `.write` method,
+        # this works better with eg `print`.
+        return contextlib.nullcontext(tp.cast(TextIO, filename))
 
-    # Expand glob patterns only when reading
-    if "r" in mode:
-        files = [Path(f) for f in sorted(glob.glob(str(filename)))]
-        if len(files) > 1:
-            return MultiFile(files, mode, max_size)
-        if len(files) == 1:
-            filename = files[0]
-
-    assert isinstance(filename, Path)
+    mode = "wt"
     if "?" in filename.name:
         return sharded_file(filename, mode, max_size)
 
     logging.getLogger(__name__).info(f"Opening {filename} with mode {mode}")
     # TODO: should we use another format ?
     if filename.suffix == ".gz":
-        # In python std lib the default mode is binary for gzip, but `smart_open`
-        # defaults to text.
-        if "r" in mode:
-            if "b" not in mode and "t" not in mode:
-                mode += "t"
-            return gzip.open(filename, mode)
-        else:
-            return BlockedGzipWriter(Path(filename), mode, block_size="64M")
+        return BlockedGzipWriter(Path(filename), mode, block_size="64M")
 
-    if filename.name.endswith("]"):
-        return contextlib.nullcontext(block_reader(filename, mode))
-    return open(filename, mode)
+    return open(filename, "wt")
 
 
 def parse_size(size):
@@ -1052,7 +1029,7 @@ def parse_size(size):
 
 
 class MultiFile(SimpleIO):
-    def __init__(self, files: Iterable[Path], mode="r", max_size="4G"):
+    def __init__(self, files: Iterable[Path], mode="w", max_size="4G"):
         self.name = str(files)
         self.mode = mode
         self.files = iter(files)
@@ -1060,25 +1037,6 @@ class MultiFile(SimpleIO):
         self.current_handle: Optional[TextIO] = None
         self.current_block_size = 0
         self._open_next_handle()  # Opening 1st handle allows to write directly.
-
-    def __next__(self) -> str:
-        assert self.current_handle is not None
-        line = self.current_handle.__next__()
-        while line is None:
-            line = self.current_handle.__next__()
-            self._open_next_handle()
-            if self.current_handle is None:
-                raise StopIteration()
-        return line
-
-    def __iter__(self):
-        # The first handle is opened in the constructor.
-        assert self.current_handle is not None
-        while True:
-            for line in self.current_handle:
-                yield line
-            if not self._open_next_handle():
-                break
 
     def write(self, content) -> int:
         # Avoid splitting newlines to a new file.
@@ -1098,7 +1056,7 @@ class MultiFile(SimpleIO):
         if file is None:
             return False
 
-        self.current_handle = smart_open(file, mode=self.mode)
+        self.current_handle = open_write(file).__enter__()
         self.current_block_size = 0
         return True
 
@@ -1117,8 +1075,12 @@ class MultiFile(SimpleIO):
             return
 
         # log("Closing", self.current_handle.name, "with mode", self.current_handle.mode)
-        self.current_handle.close()
+        self.current_handle.__exit__(None, None, None)
         self.current_handle = None
+
+
+# not sure it helps since connections are reseted anyway.
+_session = functools.lru_cache()(requests.Session)
 
 
 def request_get_content(url: str, n_retry: int = 3) -> bytes:
@@ -1126,10 +1088,11 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
 
     Retry on connection errors.
     """
+    t0 = time.time()
     logging.info(f"Starting download of {url}")
     for i in range(1, n_retry + 1):
         try:
-            r = requests.get(url)
+            r = _session().get(url)
             r.raise_for_status()
             break
         except requests.exceptions.RequestException as e:
@@ -1141,22 +1104,41 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
                 f"Swallowed error {e} while downloading {url} ({i} out of {n_retry})"
             )
             time.sleep(10 * 2 ** i)
-
-    logging.info(f"Downloaded {url} [{r.status_code}]")
+    dl_time = time.time() - t0
+    dl_speed = len(r.content) / dl_time / 1024
+    logging.info(
+        f"Downloaded {url} [{r.status_code}] took {dl_time:.0f}s ({dl_speed:.1f}kB/s)"
+    )
     return r.content
 
 
-def open_remote_file(url: str, mode: str = "r") -> TextIO:
+def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
     """
-    assert "r" in mode, f"Can't open {url} with mode {mode}."
-    content = io.BytesIO(request_get_content(url))
+    if cache and cache.exists():
+        return open_read(cache)
+
+    # TODO: open the remote file in streaming mode.
+    # The hard part is that we need to write the content on disk at the same time,
+    # to implement disk caching.
+    raw_bytes = request_get_content(url)
+    content = io.BytesIO(raw_bytes)
     if url.endswith(".gz"):
-        f = gzip.open(content, mode="rt")
+        f: TextIO = gzip.open(content, mode="rt")  # type: ignore
     else:
         f = io.TextIOWrapper(content)
-    return cast(TextIO, f)
+
+    if cache and not cache.exists():
+        # The file might have been created while downloading/writing.
+        tmp_cache = _tmp(cache)
+        tmp_cache.write_bytes(raw_bytes)
+        if not cache.exists():
+            tmp_cache.replace(cache)
+        else:
+            tmp_cache.unlink()
+
+    return _close_when_exhausted(f)
 
 
 def sharded_file(file_pattern: Path, mode: str, max_size: str = "4G") -> MultiFile:
@@ -1173,18 +1155,18 @@ def sharded_file(file_pattern: Path, mode: str, max_size: str = "4G") -> MultiFi
 
 
 class SplitFile:
-    def __init__(self, filename, chunk, n_chunks, mode="r"):
+    def __init__(self, filename: Path, chunk: int, n_chunks: int, mode: str = "r"):
         assert mode == "r"
         size = os.path.getsize(filename)
         self.handle = open(filename, mode)
         start = chunk * size // n_chunks
-        self.end = (chunk + 1) * size // n_chunks
+        self.end: int = (chunk + 1) * size // n_chunks
 
         if start > 0:
             self.handle.seek(start - 1)
             # Skip incomplete line. This avoid crashing when reading eg the middle
             # of a unicode char. `self.handle.buffer` is a binary file reader.
-            self.handle.buffer.readline()
+            self.handle.buffer.readline()  # type: ignore
 
     def __enter__(self):
         return self
@@ -1228,8 +1210,7 @@ def get_block_readers(filename: Path, n_readers, mode="t"):
     return readers
 
 
-def block_reader(filename: Path, mode: str) -> Iterable[str]:
-    assert "r" == mode, f"Can only open block {filename} in mode 'r'"
+def block_reader(filename: Path) -> Iterable[str]:
     root, pattern = str(filename)[:-1].split("[", 1)
     assert root.endswith(".gz"), "Can only read block of a .gz file for now."
 
@@ -1285,7 +1266,7 @@ class BlockedGzipWriter(MultiFile):
         we just write the end of block sequence."""
         if not self.current_handle:
             mode = self.mode + "t"
-            self.current_handle = cast(TextIO, gzip.open(self.filename, mode))
+            self.current_handle = tp.cast(TextIO, gzip.open(self.filename, mode))
             assert isinstance(self.current_handle.buffer, gzip.GzipFile)
             self.zipfile = self.current_handle.buffer
             return True
@@ -1324,9 +1305,35 @@ def grouper(iterable, n):
         yield group
 
 
+PROCESS = psutil.Process()
+
+
 def mem_footprint_gb(pid=None):
-    max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return max_rss / 1_000_000_000 * RUSAGE_UNIT
+    rss = PROCESS.memory_info().rss
+    return rss / 1_000_000_000
+
+
+def _tmp(output: Path) -> Path:
+    suffix = "".join(output.suffixes)
+    suffix = ".tmp" + suffix
+    prefix = output.name[: -len(suffix)]
+    _, tmp_path = tempfile.mkstemp(dir=output.parent, prefix=prefix, suffix=suffix)
+    return Path(tmp_path)
+
+
+@functools.lru_cache()
+def _tmp_dir() -> Path:
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id:
+        return Path("/scratch/slurm_tmpdir") / job_id
+
+    checkpoint = Path("/checkpoint") / os.environ.get("USER", "")
+    if checkpoint.exists():
+        tmp = checkpoint / "tmp"
+        tmp.mkdir(exist_ok=True)
+        return tmp
+
+    return Path("/tmp")
 
 
 if __name__ == "__main__":

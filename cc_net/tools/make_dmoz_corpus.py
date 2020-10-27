@@ -21,7 +21,7 @@ from typing import Dict, Set
 from urllib.parse import urlparse
 
 import func_argparse
-from lxml import etree
+from lxml import etree  # type: ignore
 
 from cc_net import jsonql
 
@@ -38,9 +38,8 @@ def add_tags(url: str, tags: Set[str], url2tags: TaggedUrls):
 
 def load_tags(filename: Path = None) -> TaggedUrls:
     if filename is None:
-        with jsonql.open_remote_file(DMOZ_TAGS_URL) as f:
-            with StringIO("".join(list(f))) as dmoz:
-                tree = etree.parse(dmoz)
+        with StringIO("".join(jsonql.open_remote_file(DMOZ_TAGS_URL))) as dmoz:
+            tree = etree.parse(dmoz)
     else:
         tree = etree.parse(str(filename))
 
@@ -72,8 +71,8 @@ def make_corpus(file: Path, tags_file: Path = None, output: Path = None) -> None
         - output: ""
     """
     url2tags = load_tags(tags_file)
-    with jsonql.smart_open(file) as f, jsonql.smart_open(output, "w") as o:
-        for document in jsonql.read_jsons(f):
+    with jsonql.open_write(output) as o:
+        for document in jsonql.read_jsons(file):
             if not document:
                 continue
             url = document["url"]

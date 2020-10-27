@@ -50,16 +50,16 @@ The full mining pipeline is divided in 3 steps:
 - `regroup` regroup the files created by `mine` in chunks of 4Gb
 
 Each step needs the previous step to be over before starting.
-You can launch the full pipeline using `python -m cc_net mine`.
+You can launch the full pipeline using `python -m cc_net`.
 
-* `python -m cc_net mine --help` shows help
-* `python -m cc_net mine --dump 2019-13` downloads a specific snapshot
-* `python -m cc_net mine -l my -l gu` 
+* `python -m cc_net --help` shows help
+* `python -m cc_net --dump 2019-13` treats a specific snapshot
+* `python -m cc_net -l my -l gu` 
 restricts to specific languages
-* `python -m cc_net mine --lm_dir my_lms/` uses custom LMs
-* `python -m cc_net mine --lang_threshold 0.3` set a specific field in `mine.Config`
-* `python -m cc_net mine --config test` runs on a tiny subset of a snapshot
-* `python -m cc_net mine --config config/my_config.json` uses configuration from the given config file
+* `python -m cc_net --lm_dir my_lms/` uses custom LMs
+* `python -m cc_net --lang_threshold 0.3` set a specific field in `mine.Config`
+* `python -m cc_net --config test` runs on a tiny subset of a snapshot
+* `python -m cc_net --config config/my_config.json` uses configuration from the given config file
 
 ## Reproducing our work
 
@@ -67,13 +67,17 @@ Given the CPU required to run the full pipeline on such a big corpus we share a 
 You can reconstruct the corpus used in the paper by using:
 
 ```sh
-python -m cc_net reproduce --dump 2019-09
+python -m cc_net --conf reproduce --dump 2019-09
 ```
 
 ## Adapting to your infrastructure
 
-Given the computation cost of running the full pipeline we distributes the computation on a SLURM cluster using the private submitit package.
-`execution.py` also contains code to run the code using `multiprocessing` library by passing `--execution mp` to commands.
+Given the computation cost of running the full pipeline we distributed the computation
+on a [Slurm](https://slurm.schedmd.com/) cluster using [submitit](https://github.com/facebookincubator/submitit).
+`submitit` will default to spawning processes on your machine if Slurm cluster is found.
+You should tweak `--task_parallelism` to something adapated to your machine.
+Defaults are 512 for mining and 20 for reproducing.
+
 To run the tasks in-process use `--execution debug`.
 
 
@@ -90,7 +94,7 @@ __List of fields__:
 - nlines: number of lines
 - source_domain: web domain of the webpage
 - title: page title (part of CC)
-- raw_content: webpage content after deduplication (part of CC)
+- raw_content: webpage content after deduplication
 - original_nlines: number of lines before deduplication
 - original_length: number of chars before deduplication
 - language: language detected by FastText LID
@@ -117,7 +121,7 @@ __Sample JSON object__:
 ```
 
 You can peak at those files using UNIX tools `zcat` and [`jq`](https://stedolan.github.io/jq/manual/), eg:
-`zcat data/regroup/2019-09/en_head_0000.json.gz | head -1 | jq .`
+`zcat data/mined/2019-09/en_head_0000.json.gz | head -1 | jq .`
 
 `jq` can do some complicated filtering.
 `jsonql.py` provides a Python API with multiprocess support to do more complicated operations like LM scoring of the document.

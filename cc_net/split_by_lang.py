@@ -9,7 +9,7 @@ import collections
 from pathlib import Path
 from typing import Dict, Optional
 
-import fasttext
+import fasttext  # type: ignore
 
 from cc_net import jsonql
 
@@ -62,6 +62,7 @@ class Classifier(jsonql.Transformer):
     ):
         super().__init__()
         self.model = model
+        assert model.exists(), f"Model {model} doesn't exist."
         self.field = field
         self.out_field = out_field
         self.threshold = threshold

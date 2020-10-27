@@ -8,7 +8,7 @@
 import time
 from typing import Dict, Optional
 
-import sacremoses
+import sacremoses  # type: ignore
 
 from cc_net import jsonql, text_normalizer
 

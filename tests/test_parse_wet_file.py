@@ -11,7 +11,7 @@ from cc_net import process_wet_file
 
 
 def test_parsing():
-    sample = Path(__file__).parent / "data" / "sample.warc.txt"
+    sample = Path(__file__).parent / "data" / "sample.warc.wet"
     with open(sample) as f:
         documents = list(process_wet_file.parse_warc_file(f))
 
@@ -40,7 +40,9 @@ def test_parsing():
 
     expected_quotes = """Don't part with your illusions. When they are gone you may still exist, but you have ceased to live.
 Education: that which reveals to the wise, and conceals from the stupid, the vast limits of their knowledge.
+
 Facts are stubborn things, but statistics are more pliable.
-Fiction is obliged to stick to possibilities. Truth isn't."""
+Fiction is obliged to stick to possibilities. Truth isn't.
+"""
 
     assert expected_quotes == documents[0]["raw_content"]

@@ -19,17 +19,14 @@ def check_regroup(tmp_path, regroup_fn, check_blocks_boundaries=False):
     ]
     shards_files = [tmp_path / f"{s:04d}.json.gz" for s in range(n_shards)]
     for shard, shard_file in zip(shards, shards_files):
-        jsonql.run_pipes(file=iter(shard), output=shard_file)
-
+        jsonql.run_pipes(inputs=shard, output=shard_file)
     regroup_file = tmp_path / "regroup.json.gz"
     start = time.time()
     regroup_fn(shards_files, regroup_file)
     duration = time.time() - start
     print(f"{regroup_fn.__module__}.{regroup_fn.__name__} took {duration}s")
 
-    with jsonql.smart_open(regroup_file) as f:
-        regrouped = list(jsonql.read_jsons(f))
-
+    regrouped = list(jsonql.read_jsons(regroup_file))
     assert [doc for shard in shards for doc in shard] == regrouped
 
     readers = jsonql.get_block_readers(regroup_file, n_shards)

@@ -10,10 +10,10 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-import kenlm
-import numpy as np
-import pandas as pd
-import sentencepiece
+import kenlm  # type: ignore
+import numpy as np  # type: ignore
+import pandas as pd  # type: ignore
+import sentencepiece  # type: ignore
 
 from cc_net import jsonql, text_normalizer
 
@@ -334,8 +334,8 @@ def perplexity_to_bin(file: Path, output: Path, models, tok_field: str):
     batch_size = 100_000
     i = 0
     batch = []
-    with jsonql.smart_open(file) as f, open(output, "wb") as o:
-        for doc in jsonql.read_jsons(f):
+    with open(output, "wb") as o:
+        for doc in jsonql.read_jsons(file):
             i += 1
             pp = lm(doc)[pp_field]
             if len(stats) < max_stats:

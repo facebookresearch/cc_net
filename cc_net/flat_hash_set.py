@@ -8,7 +8,7 @@
 import sys
 import time
 import warnings
-from typing import Iterable, Iterator, Sequence, Sized, Type
+from typing import Iterable, Iterator, Sequence, Sized, Tuple, Type
 
 import numpy as np
 
@@ -42,6 +42,9 @@ class AbstractDedupHashSet(Sized, Iterable[np.uint64]):
     def __setitem__(self, keys, values) -> None:
         ...
 
+    def items(self) -> Iterable[Tuple[np.uint64, np.uint8]]:
+        ...
+
     def keys(self) -> Iterable[np.uint64]:
         ...
 
@@ -57,7 +60,7 @@ class AbstractDedupHashSet(Sized, Iterable[np.uint64]):
             contains = self.__contains__(h)
 
         self.__setitem__(h, contains)
-        return ~contains
+        return contains
 
     def merge(self, keys, values):
         contains = self.__contains__(keys)
@@ -76,7 +79,7 @@ class AbstractDedupHashSet(Sized, Iterable[np.uint64]):
             np.save(f, items)
 
     def load_np(self, filename):
-        items = np.load(filename)
+        items = np.load(str(filename))
         keys = items["k"].copy()
         values = items["v"].copy()
         self.merge(keys, values)
@@ -91,12 +94,12 @@ class AbstractDedupHashSet(Sized, Iterable[np.uint64]):
         values = np.fromiter(
             (v for (k, v) in self.items()), dtype=np.uint8, count=len(self)
         )
-        with open(filename + ".val", "wb") as f:
+        with open(str(filename) + ".val", "wb") as f:
             np.save(f, values)
 
     def load_np2(self, filename):
         keys = np.load(filename)
-        values = np.load(filename + ".val")
+        values = np.load(str(filename) + ".val")
         self.merge(keys, values)
 
 
@@ -139,7 +142,7 @@ class NaiveHashSet(dict, AbstractDedupHashSet):
 
 
 try:
-    import getpy as gp
+    import getpy as gp  # type: ignore
 
     class _FlatHashSet(gp.Dict, AbstractDedupHashSet):
         """C++ backed implementation of AbstractDedupHashSet.

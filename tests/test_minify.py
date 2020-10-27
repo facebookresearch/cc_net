@@ -5,18 +5,19 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+import json
 from pathlib import Path
 
 import pytest
 
 import cc_net
 import cc_net.minify as minify
-from cc_net import process_wet_file
+from cc_net import jsonql, process_wet_file
 from cc_net.minify import (
     HASH_SIZE,
     decode_hashes,
-    encode_as_hashes,
     encode_hashes,
+    encode_line_ids,
     get_hashes,
 )
 
@@ -41,9 +42,9 @@ def test_minify():
         "raw_content": "Hello world !\nIs everyone happy in here ?",
         "language": "en",
         "perplexity": 120.0,
+        "line_ids": [0, 4],
     }
-    expected = {"hashes": "fApSnZA0cQg=", "language": "en", "perplexity": 120.0}
-
+    expected = {"line_ids": "AAAEAA==", "language": "en", "perplexity": 120.0}
     minifier = minify.Minifier()
     assert expected == minifier(doc)
 
@@ -51,68 +52,103 @@ def test_minify():
 @pytest.fixture
 def http_from_disk(monkeypatch):
     def read_sample_file(url: str, n_retry: int = 3) -> bytes:
-        expected_url = process_wet_file.WET_URL_ROOT + "/crawl-data/sample.warc.txt"
+        expected_url = process_wet_file.WET_URL_ROOT + "/crawl-data/sample.warc.wet"
         assert expected_url == url
-        file = Path(__file__).parent / "data" / "sample.warc.txt"
+        file = Path(__file__).parent / "data" / "sample.warc.wet"
         return file.read_bytes()
 
     monkeypatch.setattr(cc_net.jsonql, "request_get_content", read_sample_file)
 
 
-def test_unminify(http_from_disk):
-    # same quotes minus the "Education: ..." one
-    quotes = """Don't part with your illusions. When they are gone you may still exist, but you have ceased to live.
+def test_minify_and_fetch(http_from_disk, tmp_path: Path):
+    full_quotes = """Don't part with your illusions. When they are gone you may still exist, but you have ceased to live.
+Education: that which reveals to the wise, and conceals from the stupid, the vast limits of their knowledge.
 Facts are stubborn things, but statistics are more pliable.
 Fiction is obliged to stick to possibilities. Truth isn't."""
+    # We don't need no education.
+    chosen_quotes = "\n".join(
+        l for l in full_quotes.splitlines() if "Education" not in l
+    )
 
-    doc = {
+    cc_doc = {
         "url": "http://sample_english.com",
         "date_download": "2019-03-18T00:00:00Z",
         "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
         "source_domain": "sample_english.com",
         "title": "Famous Mark Twain Quotes",
-        "raw_content": quotes,
-        "cc_segment": "crawl-data/sample.warc.txt",
-        "nlines": 3,
-        "length": len(quotes),
-        "original_nlines": 4,
-        "original_length": 353,
+        "raw_content": full_quotes,
+        "cc_segment": "crawl-data/sample.warc.wet",
+        "nlines": 4,
+        "length": 353,
+    }
+
+    ccnet_metadata = {
         "language": "en",
         "language_score": 0.99,
         "perplexity": 151.5,
         "bucket": "head",
+        "raw_content": chosen_quotes,
+        "nlines": 3,
+        "length": len(chosen_quotes),
+        "original_nlines": 4,
+        "original_length": 353,
+        "line_ids": [0, 2, 3],
     }
+    ccnet_doc = dict(cc_doc, **ccnet_metadata)
+    mini = minify.Minifier()(ccnet_doc.copy())
+    assert mini is not ccnet_doc
 
-    # make a copy of doc since minifier operates in place
-    mini = minify.Minifier()(dict(**doc))
-    assert mini != doc
-    unminifier = minify.Unminifier()
-    assert doc == unminifier(mini)
+    important_fields = [
+        "url",
+        "digest",
+        "cc_segment",
+        "language",
+        "language_score",
+        "perplexity",
+        "bucket",
+        "line_ids",
+    ]
+    expected = {k: ccnet_doc[k] for k in important_fields}
+    expected["line_ids"] = encode_line_ids(expected["line_ids"])  # type: ignore
+    assert expected == mini
+
+    with jsonql.open_write(tmp_path / "sample.json") as o:
+        print(json.dumps(mini), file=o)
+    fetcher = minify.MetadataFetcher(tmp_path)
+    # line_ids is removed when unminifying
+    ccnet_doc.pop("line_ids")
+    assert ccnet_doc == fetcher(cc_doc)
 
 
-def test_unminify_hit_mem_cache(http_from_disk):
+def test_fetch(http_from_disk, tmp_path: Path):
     mini_docs = [
-        {
-            "url": "http://sample_english.com",
-            "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
-            "cc_segment": "crawl-data/sample.warc.txt",
-            "hashes": encode_as_hashes(
-                ["Facts are stubborn things, but statistics are more pliable."]
-            ),
-        },
         {
             "url": "http://sample_chinese.com",
             "digest": "sha1:Y4E6URVYGIAFNVRTPZ5S3J64RTZTP6HJ",
-            "cc_segment": "crawl-data/sample.warc.txt",
-            "hashes": encode_as_hashes(["事實是固執的東西，但統計數字卻比較柔和。"]),
+            "cc_segment": "crawl-data/sample.warc.wet",
+            "line_ids": encode_line_ids([2]),
+            "bucket": "not_that_great",
+        },
+        {
+            "url": "http://sample_english.com",
+            "digest": "sha1:XQZHW7QWIG54HVAV3KPRW6MK5ILDNCER",
+            "cc_segment": "crawl-data/sample.warc.wet",
+            "line_ids": encode_line_ids([3]),
+            "bucket": "top_notch",
         },
     ]
-    unminifier = minify.Unminifier()
-    unminifier.look_for(mini_docs)
-    contents = [d["raw_content"] for d in unminifier.map(mini_docs)]
-    assert unminifier.retrieved_segments == 1
+    with jsonql.open_write(tmp_path / "sample.json") as o:
+        for mini in mini_docs:
+            print(json.dumps(mini), file=o)
 
+    fetcher = minify.MetadataFetcher(tmp_path)
+    cc = process_wet_file.CCSegmentsReader(["crawl-data/sample.warc.wet"])
+    docs = [d for d in fetcher.map(cc) if d is not None]
+    assert cc.retrieved_segments == 1
+
+    # Note: documents are retrieved as they are ordered in the .warc.wet file
     assert [
         "Facts are stubborn things, but statistics are more pliable.",
         "事實是固執的東西，但統計數字卻比較柔和。",
-    ] == contents
+    ] == [d["raw_content"] for d in docs]
+    assert ["top_notch", "not_that_great"] == [d["bucket"] for d in docs]

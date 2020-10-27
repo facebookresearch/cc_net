@@ -6,34 +6,27 @@
 #
 
 import base64
-import gzip
 import hashlib
-import io
 import itertools
-import os
-import shutil
+import urllib.parse
 from pathlib import Path
-from typing import ContextManager, Dict, Iterable, List, Optional, Set, Union
-from urllib.parse import urlparse
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Union
 
 import numpy as np
 
 from cc_net import jsonql
 from cc_net.execution import get_executor
 from cc_net.jsonql import mem_footprint_gb
-from cc_net.process_wet_file import WET_URL_ROOT, parse_warc_file
 
 HASH_SIZE = 4
 HASH_TYPE = np.uint32
 
 PUBLIC_FIELDS = ["url", "digest"]
 COMPUTED_FIELDS = ["cc_segment", "language", "language_score", "bucket", "perplexity"]
-CC_NET_ROOT_FOLDER = "https://dl.fbaipublicfiles.com/cc_net/"
 DATA = Path(__file__).parent.parent / "data"
 
+
 # This is similar to dedup methods but with use 32 bits hashes.
-
-
 def _b2i(b: bytes) -> int:
     return np.frombuffer(b[:HASH_SIZE], dtype=HASH_TYPE, count=1, offset=0).item(0)
 
@@ -67,6 +60,16 @@ def decode_hashes(compact: str) -> List[bytes]:
     return res
 
 
+def encode_line_ids(line_ids: Sequence[int]) -> str:
+    arr = np.array(line_ids, dtype="<u2")
+    return base64.b64encode(arr.tobytes()).decode("ascii")
+
+
+def decode_line_ids(compact: str) -> List[int]:
+    ids_bytes = bytearray(base64.b64decode(compact))
+    return np.ndarray(len(ids_bytes) // 2, dtype="<i2", buffer=ids_bytes)
+
+
 def get_doc_key(digest: str) -> int:
     assert digest.startswith("sha1:")
     h = base64.b32decode(digest[5:])
@@ -78,23 +81,16 @@ class Minifier(jsonql.Transformer):
 
     def __init__(self):
         self.fields = frozenset(COMPUTED_FIELDS + PUBLIC_FIELDS)
-        self.collisions = 0
 
     def do(self, doc: dict) -> Optional[dict]:
-        content = doc.pop("raw_content", None)
-        if not content:
-            return None
-        hashes = get_hashes(content.split("\n"))
-        hashes_set = set(hashes)
-        self.collisions += len(hashes) - len(hashes_set)
-
+        line_ids: List[int] = doc.pop("line_ids")
         fields = self.fields
         keys = list(doc.keys())
         for k in keys:
             if k not in fields:
                 doc.pop(k, None)
-        doc["hashes"] = encode_hashes(hashes)
         p = doc.get("perplexity", 0)
+        doc["line_ids"] = encode_line_ids(line_ids)
         if p:
             doc["perplexity"] = round(p, 1)
         s = doc.get("language_score", 0)
@@ -102,140 +98,116 @@ class Minifier(jsonql.Transformer):
             doc["language_score"] = round(s, 2)
         return doc
 
-    def summary(self):
-        return [f"Found {self.collisions} collisions"]
 
+class MetadataFetcher(jsonql.Transformer):
+    """Reads documents from CC snapshot and join precomputed metadata.
 
-class Unminifier(jsonql.Transformer):
-    """Read back the text from CC dump for minified documents.
-
-    CC dumps are split in segments. Each segment is 64Mb long.
-    Unminifier uses two level of caching:
-        1. Segments are saved to the disk after being downloaded the first time.
-        2. All "interesting" documents read in a segment are kept in memory until
-        they are read.
+    CC snapshots are split in segments. Each segment is 64Mb long.
+    The metadata must also be stored in segments of the same size and names.
     """
 
-    def __init__(self, cache_dir: Path = None):
+    def __init__(self, folder: Union[Path, str]):
         self.ready = True
-        self.keys: Set[int] = set()
-        if cache_dir is not None:
-            cache_dir.mkdir(exist_ok=True)
-        self.cache_dir = cache_dir
-        self.mem_cache: Dict[int, dict] = {}
+        self.metadata: Dict[int, dict] = {}
 
-        self.retrieved_segments = 0
+        self._segments: Set[str] = set()
         self.read_doc = 0
         self.missed_doc = 0
         self.missed_par = 0
         self.processed_par = 0
 
-    def look_for(self, minified: Iterable[dict]) -> None:
-        """Mark the given minified documents as "interesting".
-        The matching document will be kept in memory when they are found.
-        """
-        for d in minified:
-            key = get_doc_key(d["digest"])
-            self.keys.add(key)
+        if isinstance(folder, str):
+            # detect path passed as string
+            if urllib.parse.urlparse(folder).scheme == "":
+                folder = Path(folder)
+                assert folder.exists(), f"Metadata folder not found: {folder}"
 
-    def open_segment(self, segment: str) -> ContextManager[Iterable[str]]:
-        url = "/".join((WET_URL_ROOT, segment))
-        if not self.cache_dir:
-            self.retrieved_segments += 1
-            return jsonql.open_remote_file(url)
+        self.folder = folder
+        self.segment: str = ""
+        self.segments_read_twice = 0
 
-        file = self.cache_dir / segment.split("/")[-1]
-        if not file.exists():
-            self.retrieved_segments += 1
-            tmp = file.with_name(f"tmp_{os.getpid()}." + file.name)
-            content = jsonql.request_get_content(url)
-            tmp.write_bytes(content)
-            # don't overwrite a file that might being read from other process.
-            if not file.exists():
-                shutil.move(tmp, file)
-            else:
-                tmp.unlink()
-            # read from memory if possible
-            return gzip.open(io.BytesIO(content), mode="rt")
+    def meta_file(self, segment: str) -> str:
+        file_name = segment.split("/")[-1]
+        assert file_name.endswith(".warc.wet.gz") or file_name.endswith(".warc.wet")
+        if isinstance(self.folder, str):
+            return urllib.parse.urljoin(
+                self.folder, file_name.replace(".warc.wet", ".json")
+            )
+        meta_file = self.folder / file_name.replace(".warc.wet", ".json")
+        assert (
+            meta_file.exists()
+        ), f"Couldn't find metadata file for segment {segment} at {meta_file}"
+        return str(meta_file)
 
-        return jsonql.smart_open(file)
+    def fetch_metadata(self, segment: str) -> None:
+        meta_file = self.meta_file(segment)
+        k = get_doc_key
+        self.metadata = {}
+        collision = 0
+        for m in jsonql.read_jsons(meta_file):
+            key = k(m["digest"])
+            if key in self.metadata:
+                collision += 1
+            self.metadata[key] = m
 
-    def retrieve_doc(self, segment: str, digest: str) -> Optional[dict]:
-        """Look for the given document.
+        self.log(f"Loaded {len(self.metadata)} metadatas from {meta_file}")
+        if collision > 0:
+            self._logger.warning(f"Found {collision} collisions !")
 
-        If the document is already in cache, it will be erased afterward.
-        """
-        key = get_doc_key(digest)
-        doc = self.mem_cache.pop(key, None)
-        if doc:
-            return doc
-
-        self.keys.add(key)
-        keys = self.keys
-        with self.open_segment(segment) as f:
-            for d in parse_warc_file(f):
-                self.read_doc += 1
-                k = get_doc_key(d["digest"])
-                if k not in keys:
-                    continue
-                self.mem_cache[k] = d
-
-        self.log_summary()
-        return self.mem_cache.pop(key, None)
+        self.segment = segment
+        if segment in self._segments:
+            self.log("Cache miss")
+            self.segments_read_twice += 1
+        self._segments.add(segment)
 
     def do(self, doc: dict) -> Optional[dict]:
-        segment = doc["cc_segment"]
+        if self.segment != doc["cc_segment"]:
+            self.fetch_metadata(doc["cc_segment"])
         digest = doc["digest"]
-
-        full_doc = self.retrieve_doc(segment, digest)
-        if not full_doc:
-            self.missed_doc += 1
+        key = get_doc_key(digest)
+        if key not in self.metadata:
             return None
-        return self.clean(doc, full_doc)
 
-    def clean(self, doc: dict, full_doc: dict) -> Optional[dict]:
-        hashes = set(_b2i(h) for h in decode_hashes(doc.pop("hashes")))
-        content = full_doc["raw_content"]
+        metadata = self.metadata.pop(key)
+        return self.clean(metadata, doc)
+
+    def clean(self, metadata: dict, full_doc: dict) -> Optional[dict]:
+        line_ids = decode_line_ids(metadata.pop("line_ids"))
+        lines = full_doc["raw_content"].split("\n")
         cleaned = []
-        processed_par = 0
-        for line in content.split("\n"):
-            h = _str_hash(line)
-            processed_par += 1
-            if h not in hashes:
+        for l in line_ids:
+            if l >= len(lines) or l < 0:
+                self.missed_par += 1
                 continue
-            # In case of in-document duplicate we keep only the first occurence.
-            # TODO: only keep two occurences if the hash appears twice
-            hashes.remove(h)
-            cleaned.append(line)
+            cleaned.append(lines[l])
 
-        self.missed_par += len(hashes)
-        self.processed_par += processed_par
+        self.processed_par += len(line_ids)
         if not cleaned:
             self.missed_doc += 1
             return None
 
-        doc["raw_content"] = "\n".join(cleaned)
-        doc["title"] = full_doc["title"]
-        doc["date_download"] = full_doc["date_download"]
-        doc["original_length"] = full_doc["length"]
-        doc["original_nlines"] = full_doc["nlines"]
-        doc["length"] = len(doc["raw_content"])
-        doc["nlines"] = len(cleaned)
-        doc["source_domain"] = urlparse(doc["url"]).netloc
-        return doc
+        full_doc["raw_content"] = "\n".join(cleaned)
+        full_doc["original_nlines"] = full_doc["nlines"]
+        full_doc["original_length"] = full_doc["length"]
+        full_doc["nlines"] = len(cleaned)
+        full_doc["length"] = len(full_doc["raw_content"])
+        for key, value in metadata.items():
+            full_doc[key] = value
+        return full_doc
 
     def summary(self) -> List[str]:
         summ = super().summary()
         mem = mem_footprint_gb()
-        len_cache = len(self.mem_cache)
+        len_cache = len(self.metadata)
         summ.append(
-            f"Read {self.read_doc:_}, stocking {len_cache:_} doc in {mem:.1}Gb."
+            f"Read {self.read_doc:_}, stocking {len_cache:_} doc in {mem:.1f}g."
         )
         if self.missed_doc:
             r = self.missed_doc / self.processed
             summ.append(f"! Missed {self.missed_doc} documents ({r:.1%}) !")
+
         if self.missed_par:
-            r = self.missed_par / self.processed_par
+            r = self.missed_par / self.processed
             summ.append(f"! Missed {self.missed_par} paragraphs ({r:.1%}) !")
         return summ
 
@@ -276,29 +248,27 @@ def minify(
     ex(minify_file, files, outputs)
 
 
-def unminify_file(file: Union[Path, str], output: Path, cache_dir: Path = None):
-    unminifier = Unminifier(cache_dir)
-    with jsonql.smart_open(file) as f:
-        mini = [m for m in jsonql.read_jsons(f)]
-    unminifier.look_for(mini)
-
+def fetch_metadata_file(
+    file: Union[Path, str],
+    metadata_dir: Union[Path, str],
+    output: Path,
+    cache_dir: Path = None,
+):
+    unminifier = MetadataFetcher(metadata_dir)
     tmp = output.with_name("tmp." + output.name)
-    jsonql.run_pipes(unminifier, file=iter(mini), output=tmp)
-    shutil.move(tmp, output)
-    f_size = Path(file).stat().st_size if Path(file).exists() else 0
-    o_size = output.stat().st_size
-    mb = 1024 ** 2
-    return f"Unminified {output} ({f_size // mb:_}Mb -> {o_size // mb:_}Mb)"
+    jsonql.run_pipes(unminifier, file=file, output=tmp)
+    tmp.rename(output)
+    return f"Fetched metadata for {file}. Results at {output}."
 
 
-def unminify(
+def fetch_metadata(
     files: List[str],
+    metadata_dir: Union[Path, str],
     output_dir: Path,
     execution: str = "mp",
     parallelism: int = -1,
     cache_dir: Path = None,
 ):
-    """Minify all the files in the given folder."""
     if len(files) == 1 and Path(files[0]).is_dir():
         folder = Path(files[0])
         files = [str(f) for f in sorted(folder.glob("*.json.gz"))]
@@ -310,6 +280,9 @@ def unminify(
     outputs = [output_dir / str(f).split("/")[-1] for f in files]
     if cache_dir is None:
         cache_dir = output_dir / "wet_cache"
+        cache_dir.mkdir(exist_ok=True)
+    if str(cache_dir) == "none":
+        cache_dir = None
     files = [f for f, o in zip(files, outputs) if not o.exists()]
     outputs = [o for o in outputs if not o.exists()]
     if not files:
@@ -323,65 +296,10 @@ def unminify(
         task_parallelism=parallelism,
         mem_gb=32,
     )
-    ex(unminify_file, files, outputs, itertools.repeat(cache_dir))
-
-
-def select_urls(
-    dump: str, languages: List[str] = None, bucket: str = "head"
-) -> List[str]:
-    urls = []
-    languages_set = set(languages) if languages else None
-    with jsonql.open_remote_file(CC_NET_ROOT_FOLDER + dump + "/files.txt") as f:
-        for file in f:
-            file = file.strip()
-            lang, buck, shard = file.split(".")[0].split("_")
-            if bucket != "all" and buck != "all" and bucket != buck:
-                # File named "all_xx" means that language "xx" didn't have a LM
-                continue
-            if languages_set and lang not in languages_set:
-                continue
-            urls.append(CC_NET_ROOT_FOLDER + dump + "/" + file)
-    return urls
-
-
-def reproduce(
-    language: List[str] = None,
-    dump: str = "2019-09",
-    bucket: str = "head",
-    shard: str = None,
-    output_dir: Path = DATA / "reconstruct",
-    execution: str = "mp",
-    parallelism: int = -1,
-    cache_dir: Path = None,
-):
-    """Reproduce paper results from official CC snapshot and precomputed results.
-
-    - dump: CC dump id
-    - language: languages to keep (defaults to all)
-    - bucket: quality bucket ("head", "middle", "tail", "all")
-        - head: highest quality according to wikipedia-trained LM
-        - tail: lowest quality
-        - all: get all buckets
-        See paper for more details: https://arxiv.org/abs/1911.00359
-        Languages without an LM, will have only one bucket "all" which is always
-        downloaded.
-    - shard: select one specific shard (format: {lang}_{bucket}_{id})
-        see https://dl.fbaipublicfiles.com/cc_net/2019-09/files.txt for available shards
-    - ouput_dir: output directory
-    - execution: how to parallelize ("mp", "debug", "slurm", ...)
-    - cache_dir: where the CC .wet files will be downloaded.
-    """
-    output_dir.mkdir(exist_ok=True, parents=True)
-    if shard is not None:
-        if not shard.endswith(".json.gz"):
-            shard += ".json.gz"
-        urls = [CC_NET_ROOT_FOLDER + dump + "/" + shard]
-    else:
-        urls = select_urls(dump, language, bucket)
-    unminify(urls, output_dir / dump, execution, parallelism, cache_dir)
+    ex(fetch_metadata_file, files, outputs, itertools.repeat(cache_dir))
 
 
 if __name__ == "__main__":
     import func_argparse
 
-    func_argparse.main(reproduce, minify_file, minify, unminify, unminify_file)
+    func_argparse.main(minify_file, minify, fetch_metadata, fetch_metadata_file)

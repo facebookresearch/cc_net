@@ -8,7 +8,13 @@
 import pytest
 
 
+def _request_is_disabled(self, *args, **kwargs):
+    raise Exception(
+        f"Your code tried to call 'request' with: {args}, {kwargs}. Unit test aren't allowed to reach internet."
+    )
+
+
 @pytest.fixture(autouse=True)
 def no_requests(monkeypatch):
     """Remove requests.sessions.Session.request for all tests."""
-    monkeypatch.delattr("requests.sessions.Session.request")
+    monkeypatch.setattr("requests.sessions.Session.request", _request_is_disabled)
