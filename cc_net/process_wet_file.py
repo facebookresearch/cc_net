@@ -168,6 +168,9 @@ class CCSegmentsReader(Iterable[dict]):
     ):
         self._segments = segments
         self.min_len = min_len
+        if cache_dir is not None:
+            cache_dir = Path(cache_dir)
+            cache_dir.mkdir(exist_ok=True)
         self.cache_dir = cache_dir
         self.retrieved_segments = 0
 
@@ -228,6 +231,7 @@ class CCShardReader(CCSegmentsReader):
         super().__init__([], min_len=min_len, cache_dir=cache_dir)
         self.dump = dump
         self.shard = shard
+        assert num_shards > 0 or num_segments_per_shard > 0
         self.num_shards = num_shards
         self.num_segments_per_shard = num_segments_per_shard
 
@@ -238,6 +242,8 @@ class CCShardReader(CCSegmentsReader):
             return self._segments
         segments = cc_segments(self.dump, self.cache_dir)
         n = len(segments)
+        if self.num_shards < 0:
+            self.num_shards = n // self.num_segments_per_shard
         i_min = (self.shard * n) // self.num_shards
         i_max = ((self.shard + 1) * n) // self.num_shards
         if self.num_segments_per_shard > 0:

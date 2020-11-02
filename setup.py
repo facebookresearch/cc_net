@@ -9,7 +9,7 @@ from setuptools import setup  # type: ignore
 
 setup(
     name="cc_net",
-    version="0.1.0",
+    version="1.0.0",
     packages=["cc_net"],
     # metadata to display on PyPI
     author="Guillaume Wenzek",
