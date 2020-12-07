@@ -53,7 +53,7 @@ def http_from_disk(monkeypatch):
     def read_sample_file(url: str, n_retry: int = 3) -> bytes:
         expected_url = process_wet_file.WET_URL_ROOT + "/crawl-data/sample.warc.wet"
         assert expected_url == url
-        file = Path(__file__).parent / "data" / "sample.warc.wet"
+        file = Path(__file__).parent / "data" / "sample.warc.txt"
         return file.read_bytes()
 
     monkeypatch.setattr(cc_net.jsonql, "request_get_content", read_sample_file)
