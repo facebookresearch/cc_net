@@ -40,7 +40,7 @@ The `Makefile` is used to train Sentence Piece and LM on Wikipedia data.
 * `make lang=de lm` trains a Sentence Piece and a LM on German Wikipedia
 * `make all_lm` trains the same model than in the paper
 * `make lang=de dl_lm` downloads the LM trained for the paper
-* `make dl_all_lm` downloads all of them
+* `make dl_all_lms` downloads all of them
 
 ## Pipeline overview
 
