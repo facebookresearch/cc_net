@@ -20,6 +20,7 @@ KENLM=./bin/lmplz
 KENLM_BUILD_BINARY=./bin/build_binary
 SPM_TRAIN=./bin/spm_train
 SPM_ENCODE=./bin/spm_encode
+PYBIN=./venv/bin/
 
 # DISTRIBUTE will run locally, or on slurm if "servers" is set.
 DISTRIBUTE=xargs -L1 -P $(process)
@@ -44,7 +45,7 @@ install: bin/lid.bin $(KENLM) $(SPM_TRAIN)
 	@if [ -f "data" ]; then\
 		echo "Please create/simlink a 'data' directory.";\
 	fi
-	@if ! python -c "from cc_net import __main__" 2> /dev/null; then\
+	@if ! $(PYBIN)python -c "from cc_net import __main__" 2> /dev/null; then\
 		pip install . ;\
 	fi
 	echo " --> All dependencies looks good !"
@@ -114,17 +115,17 @@ data/cirrus/sp/%.opening.txt: data/cirrus/gz/%.json.gz data/lm_sp/%.sp.model
 	$(SPM_ENCODE) \
 		--model=$(word 2,$^) \
 		--output_format=piece \
-			< <(python get_wiki_cirrus.py opening --file $< --n_docs $(NDOC_FOR_LM)) \
+			< <($(PYBIN)python get_wiki_cirrus.py opening --file $< --n_docs $(NDOC_FOR_LM)) \
 			> $@
 
 data/cirrus/txt/%.opening.txt: data/cirrus/gz/%.json.gz
-	python get_wiki_cirrus.py opening \
+	$(PYBIN)python get_wiki_cirrus.py opening \
 		--n_docs $(NDOC_FOR_LM) \
 		--file $< --output $@
 
 data/cirrus/gz/%.json.gz:
 	mkdir $(@D)
-	python get_wiki_cirrus.py dl --lang $(call get_lang,$(@F)) --output_dir $(@D)
+	$(PYBIN)python get_wiki_cirrus.py dl --lang $(call get_lang,$(@F)) --output_dir $(@D)
 
 clean:
 	# Remove intemediary files, dataset, third_party sources
@@ -174,18 +175,18 @@ bin/spm_train: third_party/sentencepiece
 	# $ sudo ldconfig -v
 
 test:
-	python -m cc_net mine --config test
+	$(PYBIN)python -m cc_net mine --config test
 	mkdir -p test_data/mini
-	python -m cc_net.minify minify -f test_data/mined/2019-09 -o test_data/mini/2019-09
+	$(PYBIN)python -m cc_net.minify minify -f test_data/mined/2019-09 -o test_data/mini/2019-09
 	mkdir -p test_data/reproduce
-	python cc_net/minify.py unminify -f test_data/mini/2019-09 -o test_data/reproduce/2019-09
+	$(PYBIN)python cc_net/minify.py unminify -f test_data/mini/2019-09 -o test_data/reproduce/2019-09
 	diff \
 		<(zcat test_data/mined/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content) \
 		<(zcat test_data/reproduce/2019-09/de_head_0000.json.gz | sort | jq -r .raw_content)
 
 test2:
-	python -m cc_net --config config/test_segment.json
-	python -m cc_net --config config/test_reproduce.json
+	$(PYBIN)python -m cc_net --config config/test_segment.json
+	$(PYBIN)python -m cc_net --config config/test_reproduce.json
 	diff \
 		<(zcat test_data/mined/2019-09/fr_head_0000.json.gz | jq -c 'select(.cc_segment == "crawl-data/CC-MAIN-2019-09/segments/1550247479101.30/wet/CC-MAIN-20190215183319-20190215205319-00000.warc.wet.gz") | {url, perplexity}' | sort) \
 		<(zcat test_data2/mined_by_segment/2019-09/CC-MAIN-20190215183319-20190215205319-00000.json.gz | jq -c 'select(.bucket == "head" and .language == "fr") | {url, perplexity}' | sort) \
@@ -198,13 +199,13 @@ test2:
 
 test_data/regroup_tr/$(_SEGMENT).json.gz:
 	mkdir -p test_data/transpose
-	python cc_net/transpose.py transpose -f test_data/mined/2019-09 -o test_data/transpose/2019-09 \
+	$(PYBIN)python cc_net/transpose.py transpose -f test_data/mined/2019-09 -o test_data/transpose/2019-09 \
 		--ex debug
 	mkdir -p test_data/regroup_tr
-	python cc_net/transpose.py regroup_tr -i test_data/transpose/2019-09 -o test_data/regroup_tr/2019-09 \
+	$(PYBIN)python cc_net/transpose.py regroup_tr -i test_data/transpose/2019-09 -o test_data/regroup_tr/2019-09 \
 		--ex local --conf test
 	mkdir -p test_data/reproduce_tr
-	python cc_net/transpose.py unminify -f test_data/regroup_tr/2019-09 -o test_data/reproduce_tr/2019-09 \
+	$(PYBIN)python cc_net/transpose.py unminify -f test_data/regroup_tr/2019-09 -o test_data/reproduce_tr/2019-09 \
 		--ex debug --conf test
 
 test_transpose: test_data/regroup_tr/$(_SEGMENT).json.gz
@@ -221,7 +222,7 @@ test_transpose: test_data/regroup_tr/$(_SEGMENT).json.gz
 	# zcat test_data/reproduce_tr/2019-09/*.json.gz | sort | head -2 | jq -r .raw_content
 
 test_with_metadata: test_data/regroup_tr/$(_SEGMENT).json.gz
-	python -m cc_net mine --config test --metadata test_data/regroup_tr
+	$(PYBIN)python -m cc_net mine --config test --metadata test_data/regroup_tr
 
 	diff -y -W60 \
 		<(zcat test_data/mined/2019-09/*.json.gz | jq -r .language | sort | uniq -c ) \
@@ -234,3 +235,7 @@ test_with_metadata: test_data/regroup_tr/$(_SEGMENT).json.gz
 		<(zcat test_data/reproduce/2019-09/*.json.gz | jq -r .url | sort) \
 		| head
 
+stats: data/stats/$(lang)_stats.txt
+
+data/stats/$(lang)_stats.txt:
+	zcat /datasets01/cc_clean2/112619/regroup/*/$(lang)_*.json.gz | jq -r '.source_domain' | sort | uniq -c > $@

@@ -35,6 +35,7 @@ setup(
         "requests>=2.22.0",
         "fasttext>=0.9.1",
         "sentencepiece>=0.1.82",
+        "ujson",
         "kenlm @ git+https://github.com/kpu/kenlm.git@master",
         "func_argparse>=1.1.1",
         "psutil>=5.6.3",

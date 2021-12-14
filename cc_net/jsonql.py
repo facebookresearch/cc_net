@@ -17,7 +17,7 @@ import importlib
 import inspect
 import io
 import itertools
-import json
+import ujson as json
 import logging
 import multiprocessing
 import os
@@ -313,11 +313,11 @@ class Transformer:
         self.ready = True
         return self
 
-    def __exit__(self, *args) -> None:
-        self.close()
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close(failed=exc_val is not None)
         self.log_summary()
 
-    def close(self) -> None:
+    def close(self, failed: bool=False) -> None:
         pass
 
 
@@ -522,35 +522,24 @@ class JsonReader(Transformer):
             return None
         try:
             return json.loads(line)
-        except json.decoder.JSONDecodeError as e:
-            self.log_error(e)
+        except ValueError as e:
+            self.log_error(line)
             if self.strict:
                 raise
             return None
 
-    def log_error(self, e: json.decoder.JSONDecodeError):
+    def log_error(self, line):
         self.num_errors += 1
         if self.num_errors > 10:
             return
 
-        MAX_LEN = 80
-        snippet, snippet_len = e.doc, len(e.doc)
-        col = e.pos
-        if snippet_len > MAX_LEN:
-            if col < MAX_LEN:
-                start = 0
-            elif snippet_len - col < MAX_LEN:
-                start = snippet_len - MAX_LEN
-            else:
-                start = col - MAX_LEN // 2
-            snippet = e.doc[start : start + MAX_LEN]
-            col = col - start
+        MAX_LEN = 500
+        snippet = line[:MAX_LEN]
         logging.warning(
             "\n".join(
                 [
-                    f"Invalid json (length={len(e.doc)}) {e}",
-                    snippet,
-                    " " * (col - 1) + "^",
+                    f"Invalid json (length={len(line)}):",
+                    snippet
                 ]
             )
         )
@@ -740,7 +729,7 @@ class split(Transformer):
         summ.append(f"Found {len(self.o)} splits.")
         return summ
 
-    def close(self):
+    def close(self, failed: bool=False):
         for file in self.o.values():
             file.close()
 

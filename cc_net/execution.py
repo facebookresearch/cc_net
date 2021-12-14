@@ -55,17 +55,9 @@ def get_executor(
     cluster = None if execution_mode == "auto" else execution_mode
     # use submitit to detect which executor is available
     ex = submitit.AutoExecutor(log_dir, cluster=cluster)
-
-    if ex.cluster == "local":
-        # LocalExecutor doesn't respect task_parallelism
-        return functools.partial(custom_map_array, ex, task_parallelism)
-    if ex.cluster == "debug":
-        return debug_executor
-
     # We are on slurm
     if task_parallelism == -1:
         task_parallelism = 500
-
     ex.update_parameters(
         name=name,
         timeout_min=int(timeout_hour * 60),
@@ -74,6 +66,13 @@ def get_executor(
         slurm_array_parallelism=task_parallelism,
         **options,
     )
+
+    if ex.cluster == "local":
+        # LocalExecutor doesn't respect task_parallelism
+        return functools.partial(custom_map_array, ex, task_parallelism)
+    if ex.cluster == "debug":
+        return debug_executor
+
     return functools.partial(map_array_and_wait, ex)
 
 
