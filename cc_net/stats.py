@@ -1,3 +1,4 @@
+import base64
 import collections
 import itertools
 import glob
@@ -109,6 +110,18 @@ class DomainCollect(jsonql.Transformer):
         self.log(f"Done. Results are in {output}")
 
 
+def group_files_per_lang(lang_list: List[str], folder: Path, pattern: str, target_size: int = 40 * 1024 ** 3):
+    for lang in lang_list:
+        files = [fixup_file(f) for f in folder.glob(pattern.format(lang=lang))]
+        if not files:
+            log.warning(f"No files found for language: {lang} at {folder}/{pattern.format(lang=lang)}")
+            continue
+        for i, lang_group in enumerate(
+            cc_net.regroup.determine_groups(files, target_size=target_size)
+        ):
+            yield lang, i, lang_group
+
+
 def collect(
     langs: str,
     out: Path = Path("output"),
@@ -118,22 +131,17 @@ def collect(
     assert data.exists(), f"Data not found at {data}"
     out.mkdir(exist_ok=True)
     out = out.resolve()
+    # TODO: move lang_list to group_files_per_lang
     lang_list = all_langs(data) if langs == "all" else langs.split(",")
 
     groups = []
     outputs = []
-    for lang in lang_list:
-        files = [fixup_file(f) for f in (data / "regroup").glob(f"*/{lang}_*.json.gz")]
-        if not files:
-            log.warn(f"No files found for language: {lang}")
-        for i, lang_group in enumerate(
-            cc_net.regroup.determine_groups(files, target_size=40 * 1024 ** 3)
-        ):
-            shard_out = out / f"{lang}_{i:04d}.tsv"
-            if shard_out.exists():
-                continue
-            outputs.append(shard_out)
-            groups.append(lang_group)
+    for lang, i, lang_group in group_files_per_lang(lang_list, data / "regroup", "*/{lang}_*.json.gz"):
+        shard_out = out / f"{lang}_{i:04d}.tsv"
+        if shard_out.exists():
+            continue
+        outputs.append(shard_out)
+        groups.append(lang_group)
 
     executor = cc_net.execution.get_executor(
         "domain_stats",
@@ -154,6 +162,7 @@ def _collect_stats(files: List[Path], output_file: Path):
         inputs=read_files(files, skip_invalid=True),
     )
 
+
 def all_langs(data: Path) -> List[str]:
     files = (data / "regroup").glob(f"*/*_0000.json.gz")
     langs = {f.name.split("_")[0] for f in files}
@@ -165,16 +174,23 @@ def read_files(files: list, skip_invalid: bool = True) -> Iterable[dict]:
     json_reader = jsonql.JsonReader()
     for file in files:
         if not file.exists():
-            if skip_invalid:
-                log.error(f"Skipping non existing {file}")
-                continue
             raise FileNotFoundError(file)
         try:
             i = 0
             for line in jsonql.open_read(file):
-                yield json_reader(line)
+                doc = json_reader(line)
+                if doc is None:
+                    continue
+                # Check expected keys in case of malformed data
+                assert "url" in doc
+                assert "segment" in doc
+                assert "language" in doc
+                assert "domain_short" in doc
                 i += 1
-        except (zlib.error, OSError, UnicodeDecodeError) as e:
+                yield doc
+        except EOFError:
+            continue
+        except (zlib.error, OSError, UnicodeDecodeError, AssertionError) as e:
             if skip_invalid:
                 log.error(f"Skipping {file}[{i}:] after exception: {e}")
                 continue
@@ -192,7 +208,7 @@ def fixup_file(file: Path) -> Path:
 
 
 class DomainFilter(jsonql.Transformer):
-    def __init__(self, domains_file: Path):
+    def __init__(self, domains_file: List[Path]):
         self.domains_file = domains_file
         self.domains: Set[str] = set()
         self.small_domain: DomainShortener = None
@@ -206,7 +222,7 @@ class DomainFilter(jsonql.Transformer):
     def do(self, doc: dict) -> Optional[dict]:
         domain = self.small_domain(doc["source_domain"])
         if domain not in self.domains:
-            return
+            return None
         doc.pop("tokenized", None)
         doc["domain_short"] = domain
         doc["domain_shard"] = cc_net.dedup.str_hash(domain) % 1000
@@ -216,20 +232,23 @@ class DomainFilter(jsonql.Transformer):
 def filter(
     domains: str,
     lang: str = "en",
-    out: Path = Path("output/per_domain"),
+    out: Path = Path("output/sites"),
     data: Path = Path("data"),
     execution: str = "slurm",
 ):
+    lang_list = lang.split(",")
     domains_files = [Path(f) for f in sorted(glob.glob(domains))]
     log.info(f"Received {len(domains_files)} list of domains.")
+    assert len(domains_files) > 0
     assert data.exists(), f"Data not found at {data}"
     out.mkdir(exist_ok=True)
     out = out.resolve()
 
-    files = [fixup_file(f) for f in (data / "regroup").glob(f"*/{lang}_head*.json.gz")]
-    if not files:
-        log.warn(f"No files found for language: {lang}")
-    groups = list(cc_net.regroup.determine_groups(files, target_size=40 * 1024 ** 3))
+    group_langs = []
+    groups: List[List[Path]] = []
+    for lang, i, lang_group in group_files_per_lang(lang_list, data / "regroup", "*/{lang}_*.json.gz"):
+        groups.append(lang_group)
+        group_langs.append(lang)
 
     executor = cc_net.execution.get_executor(
         "domain_filter",
@@ -242,18 +261,87 @@ def filter(
     )
 
     domain_filter = DomainFilter(domains_files)
-    def _filter_domains(files: List[Path]):
+
+    def _filter_domains(files: List[Path], lang: str):
         # split per domain names.
         # create intermediary folder to avoid having too many websites
-        pattern = str(out / "{domain_shard}/{domain_short}.") + files[0].name
+        pattern = str(out / "{domain_shard}" / files[0].name)
         jsonql.run_pipes(
             domain_filter,
             jsonql.split(pattern=pattern, mkdir=True),
             inputs=read_files(files, skip_invalid=True),
         )
-    executor(_filter_domains, groups)
 
+    executor(_filter_domains, groups, group_langs)
+
+
+def regroup_sites(sites_dir: Path, output_dir: Path, lang: str = ""):
+    json_reader = jsonql.JsonReader()
+    output_dir.mkdir(exist_ok=True)
+    outfiles = {}
+    lang_list = None if not lang else set(lang.split(","))
+
+    def _write_to_lett_file(doc: dict) -> None:
+        lang = doc["language"]
+        if lang_list is not None and lang not in lang_list:
+            return
+
+        site = doc["domain_short"]
+        site_file = output_dir / (site + ".xz")
+        if site_file not in outfiles:
+            outfiles[site_file] = jsonql.open_write(site_file).__enter__()
+        out = outfiles[site_file]
+        uri = doc["url"]
+        segment = doc.get("cc_segment", "CC_2019_09_is_missing_segment")
+        digest = doc["digest"]
+        text = base64.b64encode(doc["raw_content"].encode("utf-8")).decode("ascii")
+        print(lang, segment, digest, uri, "", text, sep="\t", file=out)
+
+    try:
+        for doc in read_files(list(sites_dir.glob("*.json.gz")), skip_invalid=True):
+            _write_to_lett_file(doc)
+    finally:
+        for o in outfiles.values():
+            o.close()
+
+
+def regroup(
+    input: Path = Path("output/sites"),
+    out: Path = Path("output/sites_regroup"),
+    lang: str = "",
+    execution: str = "slurm",
+):
+    out.mkdir(exist_ok=True)
+    out = out.resolve()
+    executor = cc_net.execution.get_executor(
+        "regroup_sites",
+        out / "logs",
+        execution,
+        timeout_hour=24,
+        mem_gb=4,
+        cpus=2,
+        task_parallelism=100,
+    )
+
+    in_dirs = [input / f"{i}" for i in range(1000)]
+    out_dirs = [out / f"{i}" for i in range(1000)]
+
+    executor(regroup_sites, in_dirs, out_dirs, itertools.repeat(lang))
 
 
 if __name__ == "__main__":
-    func_argparse.main(collect, filter)
+    func_argparse.main(collect, filter, regroup)
+
+"""Sample commands to inspect results
+
+# Find top sites for lang 'as' in shard 2
+zcat output/sites/2/*as_all*.json.gz | jq -r .domain_short | sort | uniq -c | sort -r
+      9 banglachotiall.com
+      2 aihik.in
+
+# Number of pages for all languages in 'aihik.in' website
+
+xzcat /checkpoint/guw/hmine/sites_regroup_en_as/*/aihik.in.xz | cut -f1 | sort |  uniq -c
+xzcat /checkpoint/guw/hmine/sites_regroup_en_as/*/asomiyapratidin.in.xz | cut -f1 | sort |  uniq -c
+
+"""
