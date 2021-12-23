@@ -19,6 +19,7 @@ import io
 import itertools
 import ujson as json
 import logging
+import lzma
 import multiprocessing
 import os
 import re
@@ -949,6 +950,8 @@ def open_read(filename: ReadableFileLike) -> Iterable[str]:
     logging.getLogger(__name__).info(f"Opening {filename} with mode 'rt'")
     if filename.suffix == ".gz":
         file: TextIO = gzip.open(filename, "rt")  # type: ignore
+    elif filename.suffix == ".gz":
+        file = lzma.open(filename, "rt")  # type: ignore
     else:
         file = open(filename, "rt")
 
@@ -1003,6 +1006,8 @@ def open_write(
     # TODO: should we use another format ?
     if filename.suffix == ".gz":
         return BlockedGzipWriter(Path(filename), mode, block_size="64M")
+    elif filename.suffix == ".xz":
+        return lzma.open(filename, "wt")
 
     return open(filename, "wt")
 
