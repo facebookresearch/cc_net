@@ -55,6 +55,7 @@ def get_executor(
     cluster = None if execution_mode == "auto" else execution_mode
     # use submitit to detect which executor is available
     ex = submitit.AutoExecutor(log_dir, cluster=cluster)
+    ex.parameters['timeout_min'] = int(timeout_hour * 60)
 
     if ex.cluster == "local":
         # LocalExecutor doesn't respect task_parallelism
