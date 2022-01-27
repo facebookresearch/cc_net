@@ -9,7 +9,10 @@ import collections
 from pathlib import Path
 from typing import Dict, Optional
 
-import fasttext  # type: ignore
+try:
+    import fasttext  # type: ignore
+except:
+    pass
 
 from cc_net import jsonql
 

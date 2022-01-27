@@ -5,6 +5,7 @@
 #
 
 import contextlib
+import json
 import functools
 import logging
 import re
@@ -283,5 +284,11 @@ def benchmark(tmp_path: Path):
     seg_file.unlink()
 
 
+def segment(segment: str, cache_dir: Path = None):
+    cache_dir = cache_dir or jsonql._tmp_dir()
+    docs = CCSegmentsReader([segment], cache_dir=cache_dir)
+    for doc in docs:
+        print(json.dumps(doc, ensure_ascii=False))
+
 if __name__ == "__main__":
-    func_argparse.main(ls, dl)
+    func_argparse.main(ls, dl, segment)

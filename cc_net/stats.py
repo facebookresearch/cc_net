@@ -1,10 +1,11 @@
 import base64
 import collections
-import itertools
 import glob
+import itertools
 import logging
+import subprocess
 import zlib
-from typing import Counter, List, Iterable, Optional, Set
+from typing import Counter, Dict, List, Iterable, Optional, Set
 from pathlib import Path
 
 import func_argparse
@@ -83,6 +84,10 @@ def test_domain_shortener() -> None:
     assert short("foo.bar.compute.amazonaws.com") == "foo.bar.compute.amazonaws.com"
 
 
+def domain_shard(domain: str) -> int:
+    return cc_net.dedup.str_hash(domain) % 1000
+
+
 class DomainCollect(jsonql.Transformer):
     def __init__(self, output_file: Path):
         self.stats: Counter[str] = collections.Counter()
@@ -110,11 +115,15 @@ class DomainCollect(jsonql.Transformer):
         self.log(f"Done. Results are in {output}")
 
 
-def group_files_per_lang(lang_list: List[str], folder: Path, pattern: str, target_size: int = 40 * 1024 ** 3):
+def group_files_per_lang(
+    lang_list: List[str], folder: Path, pattern: str, target_size: int = 40 * 1024 ** 3, split: str = "",
+):
     for lang in lang_list:
-        files = [fixup_file(f) for f in folder.glob(pattern.format(lang=lang))]
+        split = split if lang in ("en", "fr") else ""
+        pat = pattern.format(lang=lang, split=split)
+        files = [fixup_file(f) for f in folder.glob(pat)]
         if not files:
-            log.warning(f"No files found for language: {lang} at {folder}/{pattern.format(lang=lang)}")
+            log.warning(f"No files found for language: {lang} at {folder}/{pat}")
             continue
         for i, lang_group in enumerate(
             cc_net.regroup.determine_groups(files, target_size=target_size)
@@ -136,7 +145,9 @@ def collect(
 
     groups = []
     outputs = []
-    for lang, i, lang_group in group_files_per_lang(lang_list, data / "regroup", "*/{lang}_*.json.gz"):
+    for lang, i, lang_group in group_files_per_lang(
+        lang_list, data / "regroup", "*/{lang}_*.json.gz"
+    ):
         shard_out = out / f"{lang}_{i:04d}.tsv"
         if shard_out.exists():
             continue
@@ -182,10 +193,11 @@ def read_files(files: list, skip_invalid: bool = True) -> Iterable[dict]:
                 if doc is None:
                     continue
                 # Check expected keys in case of malformed data
-                assert "url" in doc
-                assert "segment" in doc
                 assert "language" in doc
-                assert "domain_short" in doc
+                assert "digest" in doc
+                assert "raw_content" in doc
+                assert "source_domain" in doc
+                assert "url" in doc
                 i += 1
                 yield doc
         except EOFError:
@@ -225,7 +237,7 @@ class DomainFilter(jsonql.Transformer):
             return None
         doc.pop("tokenized", None)
         doc["domain_short"] = domain
-        doc["domain_shard"] = cc_net.dedup.str_hash(domain) % 1000
+        doc["domain_shard"] = domain_shard(domain)
         return doc
 
 
@@ -246,7 +258,9 @@ def filter(
 
     group_langs = []
     groups: List[List[Path]] = []
-    for lang, i, lang_group in group_files_per_lang(lang_list, data / "regroup", "*/{lang}_*.json.gz"):
+    for lang, i, lang_group in group_files_per_lang(
+        lang_list, data / "regroup", "*/{lang}_{split}*.json.gz"
+    ):
         groups.append(lang_group)
         group_langs.append(lang)
 
@@ -298,8 +312,11 @@ def regroup_sites(sites_dir: Path, output_dir: Path, lang: str = ""):
         print(lang, segment, digest, uri, "", text, sep="\t", file=out)
 
     try:
-        for doc in read_files(list(sites_dir.glob("*.json.gz")), skip_invalid=True):
-            _write_to_lett_file(doc)
+        for file in sites_dir.iterdir():
+            if not file.name.endswith(".json.gz"):
+                continue
+            for doc in read_files([file], skip_invalid=True):
+                _write_to_lett_file(doc)
     finally:
         for o in outfiles.values():
             o.close()
@@ -329,8 +346,68 @@ def regroup(
     executor(regroup_sites, in_dirs, out_dirs, itertools.repeat(lang))
 
 
+def load_domains_stats(domains_file: List[Path]) -> Dict[str, int]:
+    domains: Dict[str, int] = {}
+    for i, line in enumerate(jsonql.open_read(domains_file)):
+        line = line.strip("\n")
+        if not line:
+            continue
+        d, n = line.split("\t", 1)
+        domains[d] = domains.get(d, 0) + int(n)
+    return domains
+
+
+def load_english_stats(stats: Path, merged_stats: Path) -> Dict[str, int]:
+    if merged_stats.exists():
+        return load_domains_stats([merged_stats])
+
+    english_stats = load_domains_stats(list(stats.glob("v1/en_*.tsv")))
+    full_en_stats = list(english_stats.items())
+    full_en_stats.sort(key=lambda x: x[1], reverse=True)
+    with jsonql.open_write(merged_stats) as o:
+        for site, n in full_en_stats:
+            print(site, n, sep="\t", file=o)
+    return english_stats
+
+
+def promising(stats: Path = Path("output/stats/")):
+    out = stats / "intersect"
+    out.mkdir(exist_ok=True)
+    english_stats = load_english_stats(stats, out / "en.tsv")
+    langs = {f.name.split("_")[0] for f in stats.glob(f"v2/*.tsv")}
+
+    for lang in langs:
+        target_stats = load_domains_stats(list(stats.glob(f"v2/{lang}_*.tsv")))
+        intersection = [
+            (s, n1, english_stats[s])
+            for s, n1 in target_stats.items()
+            if s in english_stats
+        ]
+        intersection.sort(key=lambda x: min(x[1], x[2]), reverse=True)
+
+        print("most promising sites:")
+        print("url", lang, "en", "shard")
+        for site, n1, n2 in intersection[:20]:
+            print(site, n1, n2, domain_shard(site), sep="\t")
+
+        with jsonql.open_write(out / f"{lang}.tsv") as o:
+            for site, n1, n2 in intersection:
+                print(site, n1, n2, domain_shard(site), sep="\t", file=o)
+
+
+def site_info(site: str, out: Path = Path("output")):
+    stats = out / "stats/intersect"
+    shard = domain_shard(site)
+    file = out / f"sites_regroup/{shard}/{site}.xz"
+    subprocess.run(["ls", "-lhSr", str(file)])
+    subprocess.run(
+        f"xzcat {file} | cut -f1 | sort |  uniq -c",
+        shell=True,
+    )
+
+
 if __name__ == "__main__":
-    func_argparse.main(collect, filter, regroup)
+    func_argparse.main(collect, filter, regroup, promising, site_info)
 
 """Sample commands to inspect results
 

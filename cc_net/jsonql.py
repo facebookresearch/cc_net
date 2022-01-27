@@ -17,7 +17,6 @@ import importlib
 import inspect
 import io
 import itertools
-import ujson as json
 import logging
 import lzma
 import multiprocessing
@@ -41,7 +40,17 @@ from typing import (
     TextIO,
     Tuple,
     Union,
+    TYPE_CHECKING,
 )
+
+
+if TYPE_CHECKING:
+    import json
+else:
+    try:
+        import ujson as json
+    except:
+        import json
 
 import numpy as np
 import psutil  # type: ignore
@@ -950,7 +959,7 @@ def open_read(filename: ReadableFileLike) -> Iterable[str]:
     logging.getLogger(__name__).info(f"Opening {filename} with mode 'rt'")
     if filename.suffix == ".gz":
         file: TextIO = gzip.open(filename, "rt")  # type: ignore
-    elif filename.suffix == ".gz":
+    elif filename.suffix == ".xz":
         file = lzma.open(filename, "rt")  # type: ignore
     else:
         file = open(filename, "rt")
@@ -1310,7 +1319,7 @@ def _tmp(output: Path) -> Path:
     suffix = "".join(output.suffixes)
     suffix = ".tmp" + suffix
     prefix = output.name[: -len(suffix)]
-    _, tmp_path = tempfile.mkstemp(dir=output.parent, prefix=prefix, suffix=suffix)
+    _, tmp_path = tempfile.mkstempq(dir=output.parent, prefix=prefix, suffix=suffix)
     return Path(tmp_path)
 
 
