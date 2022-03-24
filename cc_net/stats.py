@@ -3,9 +3,10 @@ import collections
 import glob
 import itertools
 import logging
+import urllib.parse
 import subprocess
 import zlib
-from typing import Counter, Dict, List, Iterable, Optional, Set
+from typing import Counter, Dict, List, Iterable, Optional, Set, Tuple
 from pathlib import Path
 
 import func_argparse
@@ -13,6 +14,11 @@ import func_argparse
 import cc_net.dedup
 import cc_net.regroup
 import cc_net.execution
+import lzma
+import multiprocessing
+import submitit
+import lzma
+from collections import defaultdict
 from cc_net import jsonql
 
 log = logging.getLogger("stats")
@@ -116,7 +122,11 @@ class DomainCollect(jsonql.Transformer):
 
 
 def group_files_per_lang(
-    lang_list: List[str], folder: Path, pattern: str, target_size: int = 40 * 1024 ** 3, split: str = "",
+    lang_list: List[str],
+    folder: Path,
+    pattern: str,
+    target_size: int = 40 * 1024 ** 3,
+    split: str = "",
 ):
     for lang in lang_list:
         split = split if lang in ("en", "fr") else ""
@@ -202,7 +212,7 @@ def read_files(files: list, skip_invalid: bool = True) -> Iterable[dict]:
                 yield doc
         except EOFError:
             continue
-        except (zlib.error, OSError, UnicodeDecodeError, AssertionError) as e:
+        except (zlib.error, OSError, UnicodeDecodeError) as e:
             if skip_invalid:
                 log.error(f"Skipping {file}[{i}:] after exception: {e}")
                 continue
@@ -289,37 +299,94 @@ def filter(
     executor(_filter_domains, groups, group_langs)
 
 
+class MultiWriterCache:
+    def __init__(self, max_len: int = 1024):
+        self.handles = {}
+        self.queue = collections.deque()
+        self.max_len = max_len
+
+    def __getitem__(self, file: Path):
+        o = self.handles.get(file)
+        if o is not None:
+            return o
+
+        # We can't use compression efficiently since we close and reopen the files
+        file.parent.mkdir(exist_ok=True)
+        o = open(file, "at", encoding="utf-8")
+        self.handles[file] = o
+        self.queue.append(file)
+
+        # Close files to avoid leaking too much resources
+        if len(self.queue) > self.max_len:
+            oldest_file = self.queue.popleft()
+            oldest_handle = self.handles.pop(oldest_file)
+            oldest_handle.close()
+
+        return o
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        for o in self.handles.values():
+            o.close()
+        self.queue.clear()
+        self.handles = {}
+
+
 def regroup_sites(sites_dir: Path, output_dir: Path, lang: str = ""):
     json_reader = jsonql.JsonReader()
-    output_dir.mkdir(exist_ok=True)
-    outfiles = {}
+    if output_dir.exists():
+        # since we are appending to files we need to erase previous content
+        for file in output_dir.iterdir():
+            file.unlink()
+    else:
+        output_dir.mkdir()
     lang_list = None if not lang else set(lang.split(","))
 
-    def _write_to_lett_file(doc: dict) -> None:
+    def _write_to_lett_file(outfiles: MultiWriterCache, doc: dict) -> None:
         lang = doc["language"]
         if lang_list is not None and lang not in lang_list:
             return
 
         site = doc["domain_short"]
-        site_file = output_dir / (site + ".xz")
-        if site_file not in outfiles:
-            outfiles[site_file] = jsonql.open_write(site_file).__enter__()
-        out = outfiles[site_file]
+        out = outfiles[output_dir / (site + ".txt")]
         uri = doc["url"]
         segment = doc.get("cc_segment", "CC_2019_09_is_missing_segment")
         digest = doc["digest"]
         text = base64.b64encode(doc["raw_content"].encode("utf-8")).decode("ascii")
         print(lang, segment, digest, uri, "", text, sep="\t", file=out)
+        out.flush()
 
-    try:
+    with MultiWriterCache() as outfiles:
         for file in sites_dir.iterdir():
             if not file.name.endswith(".json.gz"):
                 continue
+            if lang_list is not None:
+                file_lang = file.name.split("_")[0]
+                if file_lang not in lang_list:
+                    continue
+
             for doc in read_files([file], skip_invalid=True):
-                _write_to_lett_file(doc)
-    finally:
-        for o in outfiles.values():
-            o.close()
+                _write_to_lett_file(outfiles, doc)
+
+    # Compress each website
+    txt_files = [file for file in output_dir.iterdir() if file.suffix == ".txt"]
+    log.info(f"Found {len(txt_files)} websites, will start compression ...")
+
+    i = 0
+    with multiprocessing.Pool(4) as pool:
+        for _ in pool.imap_unordered(_compress_file, txt_files):
+            i += 1
+            log.info(f"Compressed {i} / {len(txt_files)} files")
+
+
+def _compress_file(txt_file: Path):
+    xz_file = txt_file.with_suffix(".xz")
+    with open(txt_file, "rb") as f, lzma.open(xz_file, "wb") as o:
+        for line in f:
+            o.write(line)
+    txt_file.unlink()
 
 
 def regroup(
@@ -335,7 +402,7 @@ def regroup(
         out / "logs",
         execution,
         timeout_hour=24,
-        mem_gb=4,
+        mem_gb=12,
         cpus=2,
         task_parallelism=100,
     )
