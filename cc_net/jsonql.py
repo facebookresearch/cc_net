@@ -323,8 +323,8 @@ class Transformer:
         self.ready = True
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.close(failed=exc_val is not None)
+    def __exit__(self, *args) -> None:
+        self.close()
         self.log_summary()
 
     def close(self, failed: bool=False) -> None:
@@ -1085,7 +1085,7 @@ class MultiFile(SimpleIO):
 _session = functools.lru_cache()(requests.Session)
 
 
-def request_get_content(url: str, n_retry: int = 3) -> bytes:
+def request_get_content(url: str, n_retry: int = 6) -> bytes:
     """Retrieve the binary content at url.
 
     Retry on connection errors.
@@ -1105,7 +1105,7 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
             warnings.warn(
                 f"Swallowed error {e} while downloading {url} ({i} out of {n_retry})"
             )
-            time.sleep(10 * 2 ** i)
+            time.sleep(10 * 2 ** i / 2)
     dl_time = time.time() - t0
     dl_speed = len(r.content) / dl_time / 1024
     logging.info(
@@ -1319,7 +1319,7 @@ def _tmp(output: Path) -> Path:
     suffix = "".join(output.suffixes)
     suffix = ".tmp" + suffix
     prefix = output.name[: -len(suffix)]
-    _, tmp_path = tempfile.mkstempq(dir=output.parent, prefix=prefix, suffix=suffix)
+    _, tmp_path = tempfile.mkstemp(dir=output.parent, prefix=prefix, suffix=suffix)
     return Path(tmp_path)
 
 

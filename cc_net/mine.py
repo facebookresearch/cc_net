@@ -65,6 +65,7 @@ class Config(NamedTuple):
     lm_dir: folder containing LMs
     lm_languages: only use LMs for the following languages
     cutoff: cutoff file to use for split in head/middle/tail
+    lang_id_model: fasttext model to use for language identification
     mine_num_processes: number of processes to use for mining
     target_size: size of finals files produce during `regroup` stage
     cleanup_after_regroup: delete intermediary files after regroup
@@ -90,6 +91,7 @@ class Config(NamedTuple):
     lm_dir: Path = Path("data/lm_sp")
     cutoff: Path = CUTOFF_CSV
     lm_languages: Optional[Sequence[str]] = None
+    lang_id_model: Path = Path("bin") / "lid.bin"
     mine_num_processes: int = 16
     target_size: str = "4G"
     cleanup_after_regroup: bool = True
@@ -360,7 +362,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     cc_shard = conf.get_cc_shard(shard)
 
     steps: Dict[str, Optional[jsonql.Transformer]] = {}
-    lang_id = Path("bin") / "lid.bin"
+    lang_id = conf.lang_id_model
     steps["lid_before_dedup"] = split_by_lang.Classifier(
         model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
     )

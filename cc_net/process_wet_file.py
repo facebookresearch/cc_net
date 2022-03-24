@@ -77,8 +77,10 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
         url = headers[2].split()[1]
         date = headers[3].split()[1]
         digest = headers[6].split()[1]
-        length = int(headers[8].split()[1])
+        cc_lid = headers[7].split()[1] if len(headers) >= 11 else None
+        length = int(headers[-2].split()[1])
     except Exception as e:
+        breakpoint()
         logger.warning("Can't parse header:", e, headers, doc)
         return None
 
@@ -96,6 +98,7 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
         "nlines": len(doc),
         "source_domain": urlparse(url).netloc,
         "title": title,
+        "cc_lid": cc_lid,
         "raw_content": "\n".join(doc),
     }
 
