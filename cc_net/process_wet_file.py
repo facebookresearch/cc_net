@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup  # type: ignore
 
 from cc_net import jsonql
 
-WET_URL_ROOT = "https://commoncrawl.s3.amazonaws.com"
+WET_URL_ROOT = "https://data.commoncrawl.org"
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,7 @@ def cc_segments(dump_id: str, cache_dir: Path = None) -> List[str]:
     return [segment.strip() for segment in f]
 
 
+@functools.lru_cache()
 def list_dumps() -> List[str]:
     home_page = BeautifulSoup(
         urllib.request.urlopen("http://index.commoncrawl.org/"), features="html.parser"

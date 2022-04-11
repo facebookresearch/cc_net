@@ -1,10 +1,16 @@
 import base64
 import collections
+import functools
 import glob
 import itertools
 import logging
-import urllib.parse
+import lzma
+import multiprocessing
+import os
+import pickle
 import subprocess
+import sys
+import urllib.parse
 import zlib
 from typing import Counter, Dict, List, Iterable, Optional, Set, Tuple
 from pathlib import Path
@@ -15,15 +21,25 @@ import cc_net.dedup
 import cc_net.regroup
 import cc_net.execution
 import lzma
-import multiprocessing
 import submitit
-import lzma
 from collections import defaultdict
 from cc_net import jsonql
 
 log = logging.getLogger("stats")
 
 PUBLIC_SUFFIX_LIST = Path(__file__).parent / "data" / "public_suffix_list.dat"
+
+
+def long_running(fn):
+    if "screen" in os.environ["TERM"]:
+        return fn
+
+    @functools.wraps(fn)
+    def restart_from_screen(*args, **kwargs):
+        breakpoint()
+        subprocess.check_call(["screen", "-R", fn.__name__, sys.executable] + sys.argv)
+
+    return restart_from_screen
 
 
 class DomainShortener:
@@ -125,7 +141,7 @@ def group_files_per_lang(
     lang_list: List[str],
     folder: Path,
     pattern: str,
-    target_size: int = 40 * 1024 ** 3,
+    target_size: int = 40 * 1024**3,
     split: str = "",
 ):
     for lang in lang_list:
@@ -390,8 +406,8 @@ def _compress_file(txt_file: Path):
 
 
 def regroup(
-    input: Path = Path("output/sites"),
-    out: Path = Path("output/sites_regroup"),
+    input: Path = Path("output/sites_split"),
+    out: Path = Path("output/sites"),
     lang: str = "",
     execution: str = "slurm",
 ):
@@ -473,8 +489,128 @@ def site_info(site: str, out: Path = Path("output")):
     )
 
 
+def read_websites_list(websites: Path) -> Tuple[Set[str], Set[str]]:
+    sites = set()
+    langs = set()
+    shorten = DomainShortener()
+    with websites.open() as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            domain, dialect = parts[0], parts[1]
+            # if shorten(domain) != domain:
+            #     print(f"{shorten(domain)} != {domain}")
+            langs.add(dialect)
+            sites.add(domain)
+    log.info(f"Loaded {len(sites)} sites across {len(langs)} languages")
+    return sites, langs
+
+
+CC200_XL = Path("/large_experiments/nllb/mmt/data/monolingual/cc200xl_v4")
+
+
+@long_running
+def regroup_cc200(
+    out: Path = Path("output/sites_cc200_split"),
+    websites: Path = Path("/checkpoint/guw/hmine/stats/websites.tsv"),
+    execution: str = "slurm",
+    resume: str = "54872887",
+) -> None:
+
+    out.mkdir(exist_ok=True)
+    executor = cc_net.execution.get_executor(
+        "regroup_sites",
+        out / "logs",
+        execution,
+        timeout_hour=24,
+        mem_gb=10,
+        cpus=1,
+        task_parallelism=100,
+    )
+
+    if not resume:
+        sites, langs = read_websites_list(websites)
+        lang_files: List[Path] = []
+        for lang in sorted(langs):
+            lang_files.extend(sorted(CC200_XL.glob(f"cc200xl.{lang}.*.xz")))
+        groups = list(cc_net.regroup.determine_groups(lang_files))
+        # English files are big
+        groups.extend([e] for e in sorted(CC200_XL.glob(f"cc200xl.eng.*.xz")))
+        tasks = [WebsiteExtractor(out, sites, group) for group in groups]
+
+    else:
+        tasks = []
+        for i in range(1_000_000):
+            prev_job = submitit.core.utils.JobPaths(out / "logs", f"{resume}_{i}")
+            if not prev_job.submitted_pickle.exists():
+                log.info(f"Will resume {len(tasks)} jobs from originally {i + 1} jobs")
+                break
+            progress = _reload(prev_job)
+            if progress is None:
+                continue
+            tasks.append(progress)
+
+    executor(WebsiteExtractor.__call__, tasks)
+
+
+def _reload(job: submitit.core.utils.JobPaths) -> Optional["WebsiteExtractor"]:
+
+    if job.result_pickle.exists():
+        status, res = pickle.loads(job.result_pickle.read_bytes())
+        if status == "success":
+            return None
+
+    requeued = (
+        job.submitted_pickle.stat().st_mtime > job.submission_file.stat().st_mtime
+    )
+    if requeued:
+        breakpoint()
+        log.info("Resuming job with progress")
+    delayed_fn = pickle.loads(job.submitted_pickle.read_bytes())
+    (extractor,) = delayed_fn.args
+    return extractor
+
+
+class WebsiteExtractor(submitit.helpers.Checkpointable):
+    def __init__(self, outdir: Path, sites: Set[str], files: List[Path]):
+        self.sites = sites
+        self.read_lines = -1
+        self.files = files
+        self.outdir = outdir
+
+    def __call__(self):
+        shorten = DomainShortener()
+
+        with MultiWriterCache() as outfiles:
+            while self.files:
+                file = self.files[0]
+                self.read_lines = -1
+                lang = file.name.split(".")[1]
+                try:
+                    with lzma.open(file, "rt", encoding="utf-8") as f:
+                        for i, line in enumerate(f):
+                            if i < self.read_lines:
+                                continue
+                            self.read_lines = i
+                            line = line.rstrip("\n")
+                            text, url, segment, hash, paragraph = line.rsplit("\t", 4)
+                            domain = shorten(urllib.parse.urlparse(url).netloc)
+                            if domain not in self.sites:
+                                continue
+                            domain_file = (
+                                self.outdir
+                                / str(domain_shard(domain))
+                                / (domain + ".txt")
+                            )
+                            print(line, lang, sep="\t", file=outfiles[domain_file])
+
+                except EOFError:
+                    pass
+
+                self.files.pop(0)
+
+
 if __name__ == "__main__":
-    func_argparse.main(collect, filter, regroup, promising, site_info)
+    func_argparse.main(collect, filter, regroup, promising, site_info, regroup_cc200)
 
 """Sample commands to inspect results
 
