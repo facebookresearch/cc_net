@@ -26,7 +26,6 @@ import sys
 import tempfile
 import time
 import typing as tp
-import warnings
 import zlib
 from pathlib import Path
 from typing import (
@@ -62,6 +61,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(process)d:%(name)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M",
 )
+
+log = logging.getLogger("jsonql")
 
 NEWLINE = " N3WL1N3 "
 
@@ -299,7 +300,7 @@ class Transformer:
 
     def __setstate__(self, state: Tuple[tuple, dict, bool]):
         if self.warn_when_pickling:
-            warnings.warn(f"Unpickling transformer: {type(self)}. This can be slow.")
+            log.warn(f"Unpickling transformer: {type(self)}. This can be slow.")
         (args, kwargs, expect_json) = state
         # When unpickling `__new__` isn't called so we have to doit ourselves.
         Transformer.__init__(self, state_args=args, state_kwargs=kwargs)
@@ -427,7 +428,6 @@ def run_pipes(
         transformers.append(t)
     pipes = fns[len(transformers) :]
 
-    log = logging.getLogger(__name__).info
     if inputs is None:
         data: Iterable = open_read(file)
     else:
@@ -438,13 +438,13 @@ def run_pipes(
 
     with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
         if transformers:
-            log(f"preparing {transformers}")
+            log.info(f"preparing {transformers}")
             transform = stack.enter_context(compose(transformers))
             if processes <= 1:
                 data = transform.map(data)
             else:
                 p = multiprocessing.current_process()
-                log(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
+                log.info(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
                 pool = stack.enter_context(
                     multiprocessing.Pool(
                         processes=processes,
@@ -545,7 +545,7 @@ class JsonReader(Transformer):
 
         MAX_LEN = 500
         snippet = line[:MAX_LEN]
-        logging.warning(
+        log.warning(
             "\n".join(
                 [
                     f"Invalid json (length={len(line)}):",
@@ -607,7 +607,7 @@ def compile_expr(clause: Union[str, FilterFn], requires: List[str] = None):
     if not args_list:
         # This is only a warning because you may want to have eg random sampling
         # that doesn't depend on the document.
-        logging.warn(
+        log.warn(
             f"Warning: No variable found in expression: <{clause}>\n"
             "Variables should be written inside braces, eg: {language}=='en'"
         )
@@ -686,7 +686,7 @@ def merge(lines, columns, separator="\t", newline=NEWLINE):
                 try:
                     doc[columns[i]] = type_parsing[i](value)
                 except ValueError:
-                    logging.error(
+                    log.error(
                         f"Error when parsing column {i} of line: {line[:100]}..."
                     )
         return doc
@@ -813,9 +813,9 @@ def display_stats(stats, key, weights=None, bins="auto", cumulative=False):
         out[-1] += f", histogram is: (bins={bins})"
         if weights:
             if weights not in stats:
-                logging.warn(f"Warning: weights column {weights} not found.")
+                log.warn(f"Warning: weights column {weights} not found.")
             if weights + ".val" not in stats:
-                logging.warn(
+                log.warn(
                     f"Warning: weights column {weights} is not a numeric column."
                 )
             weights = stats.get(weights + ".val")
@@ -1011,7 +1011,7 @@ def open_write(
     if "?" in filename.name:
         return sharded_file(filename, mode, max_size)
 
-    logging.getLogger(__name__).info(f"Opening {filename} with mode {mode}")
+    log.info(f"Opening {filename} with mode {mode}")
     # TODO: should we use another format ?
     if filename.suffix == ".gz":
         return BlockedGzipWriter(Path(filename), mode, block_size="64M")
@@ -1085,16 +1085,16 @@ class MultiFile(SimpleIO):
 _session = functools.lru_cache()(requests.Session)
 
 
-def request_get_content(url: str, n_retry: int = 6) -> bytes:
+def request_get_content(url: str, n_retry: int = 6, **kwargs) -> bytes:
     """Retrieve the binary content at url.
 
     Retry on connection errors.
     """
     t0 = time.time()
-    logging.info(f"Starting download of {url}")
+    log.info(f"Starting download of {url}")
     for i in range(1, n_retry + 1):
         try:
-            r = _session().get(url)
+            r = _session().get(url, **kwargs)
             r.raise_for_status()
             break
         except requests.exceptions.RequestException as e:
@@ -1102,19 +1102,19 @@ def request_get_content(url: str, n_retry: int = 6) -> bytes:
             message = e.args[0] if isinstance(e.args[0], str) else ""
             if i == n_retry or "Client Error" in message:
                 raise e
-            warnings.warn(
+            log.warn(
                 f"Swallowed error {e} while downloading {url} ({i} out of {n_retry})"
             )
             time.sleep(10 * 2 ** i / 2)
     dl_time = time.time() - t0
     dl_speed = len(r.content) / dl_time / 1024
-    logging.info(
+    log.info(
         f"Downloaded {url} [{r.status_code}] took {dl_time:.0f}s ({dl_speed:.1f}kB/s)"
     )
     return r.content
 
 
-def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
+def open_remote_file(url: str, cache: Path = None, headers: dict = None) -> Iterable[str]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
     """
@@ -1124,7 +1124,7 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     # TODO: open the remote file in streaming mode.
     # The hard part is that we need to write the content on disk at the same time,
     # to implement disk caching.
-    raw_bytes = request_get_content(url)
+    raw_bytes = request_get_content(url, headers=headers)
     content = io.BytesIO(raw_bytes)
     if url.endswith(".gz"):
         f: TextIO = gzip.open(content, mode="rt")  # type: ignore
@@ -1317,10 +1317,18 @@ def mem_footprint_gb(pid=None):
 
 def _tmp(output: Path) -> Path:
     suffix = "".join(output.suffixes)
+    prefix = output.name[: -len(suffix)+1]
     suffix = ".tmp" + suffix
-    prefix = output.name[: -len(suffix)]
     _, tmp_path = tempfile.mkstemp(dir=output.parent, prefix=prefix, suffix=suffix)
     return Path(tmp_path)
+
+@contextlib.contextmanager
+def tmp_outfile(output: Path) -> Iterator[TextIO]:
+    tmp = _tmp(output)
+    with open_write(tmp) as o:
+        yield o
+    # No try/catch we are only renaming in case of success
+    tmp.rename(output)
 
 
 @functools.lru_cache()
