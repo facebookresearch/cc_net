@@ -15,6 +15,7 @@ import zlib
 from typing import Counter, Dict, List, Iterable, Optional, Set, Tuple
 from pathlib import Path
 
+import filelock
 import func_argparse
 
 import cc_net.dedup
@@ -478,13 +479,13 @@ def promising(stats: Path = Path("output/stats/")):
                 print(site, n1, n2, domain_shard(site), sep="\t", file=o)
 
 
-def site_info(site: str, out: Path = Path("output")):
-    stats = out / "stats/intersect"
+def site_info(site: str, out: Path = Path("output/sites_cc200")):
+    stats = "/checkpoint/guw/hmine/stats/websites.tsv"
     shard = domain_shard(site)
-    file = out / f"sites_regroup/{shard}/{site}.xz"
+    file = out / f"{shard}/{site}.txt"
     subprocess.run(["ls", "-lhSr", str(file)])
     subprocess.run(
-        f"xzcat {file} | cut -f1 | sort |  uniq -c",
+        f"cat {file} | cut -d',' -f2 | sort |  uniq -c",
         shell=True,
     )
 
@@ -507,13 +508,25 @@ def read_websites_list(websites: Path) -> Tuple[Set[str], Set[str]]:
 
 CC200_XL = Path("/large_experiments/nllb/mmt/data/monolingual/cc200xl_v4")
 
+def test(file: Path = CC200_XL / "cc200xl.sin.0.xz", domain: str = "immigration.gov.lk"):
+    shorten = DomainShortener()
+    domain_file = (Path("/private/home/guw") / domain).open("w", encoding="utf-8")
+    with lzma.open(file, "rt", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.rstrip("\n")
+            text, url, segment, hash, paragraph = line.rsplit("\t", 4)
+            line_domain = shorten(urllib.parse.urlparse(url).netloc)
+            if line_domain != domain:
+                continue
+            print(line, file=domain_file)
+    print(f"Found {i} paragraphs from site {domain} in {file}")
 
-@long_running
+# @long_running
 def regroup_cc200(
-    out: Path = Path("output/sites_cc200_split"),
+    out: Path = Path("output/sites_cc200"),
     websites: Path = Path("/checkpoint/guw/hmine/stats/websites.tsv"),
     execution: str = "slurm",
-    resume: str = "54872887",
+    resume: str = "",
 ) -> None:
 
     out.mkdir(exist_ok=True)
@@ -529,6 +542,7 @@ def regroup_cc200(
 
     if not resume:
         sites, langs = read_websites_list(websites)
+        langs = {"sin"}
         lang_files: List[Path] = []
         for lang in sorted(langs):
             lang_files.extend(sorted(CC200_XL.glob(f"cc200xl.{lang}.*.xz")))
@@ -576,41 +590,89 @@ class WebsiteExtractor(submitit.helpers.Checkpointable):
         self.read_lines = -1
         self.files = files
         self.outdir = outdir
+        self.queue: Dict[Path, List[tuple]] = defaultdict(list)
+        self.queue_len = 0
 
-    def __call__(self):
+    def write(self, line: tuple, file: Path) -> None:
+        self.queue[file].append(line)
+        self.queue_len += 1
+        if self.queue_len > 1_000_000:
+            self.flush_one()
+
+    def flush(self) -> None:
+        timeout = 0.0
+        sites = set(self._queued_sites())
+        while sites:
+            flushed = set()
+            for site in sites:
+                try:
+                    self._flush_site(site, timeout=timeout)
+                    flushed.add(site)
+                except filelock.Timeout:
+                    continue
+            sites -= flushed
+            timeout = (timeout + 0.1) * 2
+
+
+    def flush_one(self, sites: List[Path] = None, timeout: float = 0.0) -> Path:
+        if sites is None:
+            sites = self._queued_sites()
+        for site in sites:
+            try:
+                self._flush_site(site, timeout=timeout)
+            except filelock.Timeout:
+                continue
+            return site
+        else:
+            return self.flush_one(sites, timeout=(timeout + 0.1) * 2)
+
+    def _flush_site(self, site: Path, timeout: float = 0.1) -> None:
+        site.parent.mkdir(exist_ok=True)
+        with filelock.FileLock(site, timeout=timeout):
+            with site.open("a") as o:
+                lines = self.queue.pop(site)
+                for line in lines:
+                    print(*line, sep="\t", file=o)
+                self.queue_len -= len(lines)
+
+    def _queued_sites(self) -> List[Path]:
+        return sorted(self.queue.keys(), key=lambda x: -len(self.queue[x]))
+
+    def __call__(self) -> None:
         shorten = DomainShortener()
 
-        with MultiWriterCache() as outfiles:
-            while self.files:
-                file = self.files[0]
-                self.read_lines = -1
-                lang = file.name.split(".")[1]
-                try:
-                    with lzma.open(file, "rt", encoding="utf-8") as f:
-                        for i, line in enumerate(f):
-                            if i < self.read_lines:
-                                continue
-                            self.read_lines = i
-                            line = line.rstrip("\n")
-                            text, url, segment, hash, paragraph = line.rsplit("\t", 4)
-                            domain = shorten(urllib.parse.urlparse(url).netloc)
-                            if domain not in self.sites:
-                                continue
-                            domain_file = (
-                                self.outdir
-                                / str(domain_shard(domain))
-                                / (domain + ".txt")
-                            )
-                            print(line, lang, sep="\t", file=outfiles[domain_file])
+        while self.files:
+            file = self.files[0]
+            self.read_lines = -1
+            lang = file.name.split(".")[1]
+            try:
+                with lzma.open(file, "rt", encoding="utf-8") as f:
+                    for i, line in enumerate(f):
+                        if i < self.read_lines:
+                            continue
+                        self.read_lines = i
+                        line = line.rstrip("\n")
+                        text, url, segment, hash, paragraph = line.rsplit("\t", 4)
+                        domain = shorten(urllib.parse.urlparse(url).netloc)
+                        if domain not in self.sites:
+                            continue
+                        domain_file = (
+                            self.outdir
+                            / str(domain_shard(domain))
+                            / (domain + ".txt")
+                        )
+                        self.write((line, lang), file=domain_file)
 
-                except EOFError:
-                    pass
+            except EOFError:
+                pass
+            finally:
+                self.flush()
 
-                self.files.pop(0)
+            self.files.pop(0)
 
 
 if __name__ == "__main__":
-    func_argparse.main(collect, filter, regroup, promising, site_info, regroup_cc200)
+    func_argparse.main(collect, filter, regroup, promising, site_info, regroup_cc200, test)
 
 """Sample commands to inspect results
 
