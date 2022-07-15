@@ -17,6 +17,7 @@ __pycache__/
 
 /scratch/
 /notebooks/
+/venv/
 
 /build/
 /cc_net.egg-info/
@@ -24,4 +25,4 @@ __pycache__/
 /dist/
 /pip-wheel-metadata/
 
-/.DS_Store
+.DS_Store/

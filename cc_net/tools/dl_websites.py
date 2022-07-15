@@ -5,10 +5,16 @@ import cc_net.websites
 import cc_net.jsonql
 import logging
 import collections
+import multiprocessing
+import submitit
 
 log = logging.getLogger("websites")
 
 WARC = Path("/checkpoint/guw/hmine/warc")
+LETT = Path("/checkpoint/guw/hmine/lett")
+FASTTEXT_MODEL = Path(
+    "/large_experiments/nllb/mmt/lidruns/lid_models/2022-02-18_ft_model.bin"
+)
 WEBSITES = Path("/checkpoint/guw/hmine/stats/websites.tsv")
 RATIO_PAGES_COL = 5
 
@@ -24,7 +30,7 @@ def dl(
         WARC / "logs",
         execution,
         timeout_hour=3 * 24,
-        task_parallelism=250,
+        task_parallelism=515,
     )
 
     tasks = collections.defaultdict(list)
@@ -40,17 +46,20 @@ def dl(
                 # log.warn(
                 #     f"Skipping website {website} in {dialect} because ratio is {ratio_pages}"
                 # )
-                skipped+= 1
+                skipped += 1
                 continue
             kept += 1
             (outdir / dialect).mkdir(exist_ok=True)
             tasks[dialect].append(website)
-    log.info(f"Found {kept} documents (skipped {skipped} because ratio is too low), across {len(tasks)} languages.")
+    log.info(
+        f"Found {kept} documents (skipped {skipped} because ratio is too low), across {len(tasks)} languages."
+    )
 
     sites = []
     outdirs = []
 
-    for dialect in tasks:
+    dialects = sorted(tasks.keys())
+    for dialect in dialects:
         dialect_outdir = outdir / dialect
         dialect_outdir.mkdir(exist_ok=True)
 
@@ -62,8 +71,87 @@ def dl(
     ex(cc_net.websites.dl_batch, sites, outdirs)
 
 
+# Done: tir
+# In progress: asm,kac,kmb,lin
+# In porgress: luo,orm,sin,wol,dyu,kea,kon,mri,que
+#
+def lett(
+    langs: str = "tir",
+    warc: Path = WARC,
+    lett: Path = LETT,
+    fasttext: Path = FASTTEXT_MODEL,
+    execution: str = "slurm,slurm_partition=learnaccel",
+):
+    _langs = langs.split(",")
+
+    n_files = 0
+    stats = collections.defaultdict(int)
+    tasks = []
+    for lang in _langs:
+        (lett / lang).mkdir(exist_ok=True)
+        for file in (WARC / lang).iterdir():
+            if ".tmp." in file.name:
+                continue
+            if file.suffix == ".progress":
+                continue
+            if file.is_dir():
+                continue
+            if (file.parent / (file.name + ".gz")).exists():
+                continue
+
+            lett_file_name = file.name
+            if not lett_file_name.endswith(".gz"):
+                lett_file_name += ".gz"
+            lett_file = lett / lang / lett_file_name
+            if lett_file.exists():
+                continue
+            #     n_files += 1
+            #     file_stats = cc_net.websites.lett_file_stats(lett_file)
+            #     if all(len(k) > 2 for k in file_stats):
+            #         for k, v in file_stats.items():
+            #             stats[k] += v
+            #         continue
+            #     else:
+            #         # redo the file since it has old language codes
+            #         pass
+            tasks.append((file, fasttext, lett_file))
+
+    print(f"Stats on {n_files} files: {stats}")
+
+    batches = [submitit.helpers.FunctionSequence()]
+    batch_size = len(tasks) / 200
+    for task in tasks:
+        if len(batches[-1]) > batch_size:
+            batches.append(submitit.helpers.FunctionSequence())
+        batches[-1].add(cc_net.websites.extract_lett, *task)
+
+    print(f"Grouped {len(tasks)} in {len(batches)} groups")
+    breakpoint()
+
+    ex = cc_net.execution.get_executor(
+        "dl_websites",
+        WARC / "logs",
+        execution,
+        timeout_hour=3*24,
+        task_parallelism=200,
+    )
+
+    ex(submitit.helpers.FunctionSequence.__call__, batches)
+
+    # Aggregate stats
+    with multiprocessing.Pool(16) as pool:
+        for file_stats in pool.starmap(cc_net.websites.extract_lett, tasks):
+            for k, v in file_stats.items():
+                n_files += 1
+                stats[k] += v
+    print(f"Stats on {n_files} files: {stats}")
+
+    # for task in tasks:
+    #     cc_net.websites.extract_lett(*task)
+    #     print(f"Converted {task}")
+
+
 if __name__ == "__main__":
     import func_argparse
 
-    func_argparse.single_main(dl, warc2text)
-
+    func_argparse.main(dl, lett)

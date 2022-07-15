@@ -1,16 +1,19 @@
+import functools
+import gzip
+import itertools
+import json
+import logging
+import multiprocessing
+import requests
+import subprocess
+import urllib.parse
+import zlib
+from typing import Iterator, List, NamedTuple, BinaryIO
+from pathlib import Path
+
 import cc_net
 import cc_net.process_wet_file
-
-import requests
-import multiprocessing
-import functools
 import submitit
-import subprocess
-import json
-import urllib.parse
-import logging
-from typing import Iterator, List, NamedTuple, TextIO
-from pathlib import Path
 from cc_net import jsonql
 
 CC = "https://data.commoncrawl.org/"
@@ -18,6 +21,7 @@ INDEX_LIST_URL_PATTERN = CC + "crawl-data/CC-MAIN-{snapshot}/cc-index.paths.gz"
 
 IDX = Path("/checkpoint/guw/hmine/indexes")
 WARC = Path("/checkpoint/guw/hmine/warc")
+FASTTEXT_MODEL = Path("")
 
 log = logging.getLogger("cc_net.websites")
 
@@ -86,6 +90,7 @@ def read_idx(idx_file: Path) -> Iterator[IndexEntry]:
 
 
 def idx_btree(snapshot: str, idx_dir: Path = IDX) -> List[BtreeEntry]:
+    # TODO: download the indexes if needeed
     idx_files = list(idx_dir.glob(f"{snapshot}.cdx-*.gz"))
     assert idx_files, f"Invalid snashot name {snapshot} for index dir: {idx_dir}"
 
@@ -106,7 +111,6 @@ def idx_btree(snapshot: str, idx_dir: Path = IDX) -> List[BtreeEntry]:
             break
 
     splits.sort()
-    print(splits)
 
     btree_file.write_text(json.dumps(splits, indent=2))
     return splits
@@ -222,118 +226,123 @@ def find_in_snapshot(
     return docs
 
 
-# def dl_from_snapshot(
-#     website: str, snapshot: str, outfile: TextIO, idx_dir: Path = IDX
-# ) -> List[Document]:
-#     docs = find_in_snapshot(website)
-#     # breakpoint()
-#     with open(doclist_file, "a") as doc_o:
-#         for doc in docs:
-#             print(doc, sep="\t", file=doc_o)
-#     docs = merge_doc_ranges(docs)
-#     # with jsonql.open_write(outdir / website) as o:
-#     for doc in docs:
-#         dl_doc(doc, outfile)
-
-#     return docs
-
-
 SNAPSHOTS = "2022-05,2021-49,2021-43,2021-39,2021-31,2021-25,2021-21,2021-17,2021-10,2021-04,2020-50,2020-45,2020-40,2020-34,2020-29,2020-24,2020-16,2020-10,2020-05,2019-51,2019-47,2019-43,2019-39,2019-35,2019-30,2019-26,2019-22,2019-18,2019-13,2019-09,2019-04,2018-51,2018-47,2018-43,2018-39,2018-34,2018-30,2018-26,2018-22,2018-17,2018-13,2018-09,2018-05,2017-51,2017-47,2017-43,2017-39,2017-34,2017-30,2017-26,2017-22,2017-17,2017-13,2017-09,2017-04".split(
     ","
 )
 
 
-def dl_from_cc(website: str, outfile: Path, idx_dir: Path = IDX) -> None:
-    if outfile.exists():
-        return
+def find_in_cc(
+    website: str, cache_file: Path = None, idx_dir: Path = IDX
+) -> List[Document]:
+    """Read all CC indexes to identify the documents from the given website.
 
-    doclist_file = outfile.parent / "doc_lists" / f"{website}.docs.txt"
-    if doclist_file.exists():
+    website: website to search for
+    cache_file: a file that will be used to cache the results
+    idx_dir: the directory to find the indexes
+    """
+    need_write = False
+
+    if cache_file and cache_file.exists():
         docs = []
-        for line in jsonql.open_read(doclist_file):
-            if len(line) <= 1:
-                continue
-            docs.append(Document.from_tsv(line))
+        for line in jsonql.open_read(cache_file):
+            try:
+                docs.append(Document.from_tsv(line))
+            except AssertionError:
+                # Fix error in some preexisting files
+                docs.append(eval(line))
+                need_write = True
+
         log.info(f"Loaded {len(docs)} docs from website {website}")
-    elif (WARC / "doc_lists" / f"{website}.docs.txt").exists():
-        doclist_file.parent.mkdir(exist_ok=True)
-        breakpoint()
-        (WARC / "doc_lists" / f"{website}.docs.txt").rename(doclist_file)
-        return dl_from_cc(website, outfile, idx_dir)
+    elif cache_file and (WARC / "doc_lists" / f"{website}.docs.txt").exists():
+        # reuse old naming schem
+        cache_file.parent.mkdir(exist_ok=True)
+        (WARC / "doc_lists" / f"{website}.docs.txt").rename(cache_file)
+        return find_in_cc(website, cache_file, idx_dir)
     else:
+        need_write = True
         docs = []
         for snapshot in SNAPSHOTS:
             docs.extend(find_in_snapshot(website, snapshot, idx_dir))
 
         log.info(f"Found {len(docs)} docs from website {website}")
 
-        with jsonql.tmp_outfile(doclist_file) as o:
+    if cache_file and need_write:
+        with jsonql.tmp_outfile(cache_file) as o:
             for doc in docs:
-                print(doc, sep="\t", file=o)
+                print(*doc, sep="\t", file=o)
+    return docs
 
-    progress_file = Path(str(outfile) + ".progress")
+
+def dl_from_cc(website: str, outfile: Path, idx_dir: Path = IDX) -> None:
+    assert outfile.suffix == ".gz"
+
+    text_outfile = outfile.parent / outfile.stem
+    if text_outfile.exists():
+        recompress_warc_file(text_outfile, outfile)
+
+    doclist_file = outfile.parent / "doc_lists" / f"{website}.docs.txt"
+    docs = find_in_cc(website, doclist_file, idx_dir)
+
+    progress_file = outfile.with_suffix(".progress")
     if progress_file.exists():
-        progress = len(progress_file.read_text().splitlines())
-        log.info(f"Resuming from {progress} downloaded pages in {outfile}")
+        progress = progress_file.read_text().splitlines()
+        log.info(f"Resuming from {len(progress)} downloaded pages in {outfile}")
     else:
-        progress = 0
+        progress = []
 
-    with open(progress_file, "a") as progress_o:
-        with jsonql.open_write(outfile) as o:
-            for i, doc in enumerate(docs):
-                if i < progress:
-                    continue
-                dl_doc(doc, o)
-                print(doc.url, file=progress_o)
+    # Note: first I thought I could optimize the download by grouping downloads
+    # from the same warc files. But unfortunately even for a given website,
+    # it's rare to find two pages in the same warc file.
+    n_docs = len(docs)
+    optimization_potential = 0
+    last_url = ""
+    for doc in sorted(docs):
+        if doc.url == last_url:
+            optimization_potential += 1
+        last_url = doc.url
+    log.info(f"optimization_potential: {optimization_potential / n_docs:.2%}")
+
+    with open(outfile, "ab") as o, open(progress_file, "a") as progress_o:
+        for i, (url, doc) in enumerate(itertools.zip_longest(progress, docs)):
+            if url is not None:
+                assert url == doc.url
+                continue
+            dl_doc(doc, o)
+            print(doc.url, file=progress_o, flush=True)
+            log.info(f"Downloaded {i+1}/{n_docs} pages for website {website}")
 
 
 def dl_batch(websites: List[str], outdir: Path, idx_dir: Path = IDX):
-    for website in websites:
+    n = len(websites)
+    cached, downloaded, failed = 0, 0, 0
+    for i, website in enumerate(websites):
+        log.info(
+            f"Downloaded {downloaded}/{n} websites. Failed {failed}, {cached} found on disks"
+        )
         if (outdir / website).exists():
+            cached += 1
+            downloaded += 1
             continue
         try:
-            dl_from_cc(website, outdir / website, idx_dir)
+            dl_from_cc(website, outdir / (website + ".gz"), idx_dir)
+            downloaded += 1
+            log.info(f"Downloaded {website}")
         except Exception as e:
             log.error(f"Error while downloading {website}")
             log.exception(e)
+            failed += 1
 
 
-def merge_doc_ranges(docs: List[Document], ratio: float = 2.0) -> List[Document]:
-    # TODO: it doesn't seems to help most of the time
-    docs.sort()
-
-    merged = []
-    current_doc = docs[0]
-    current_end = current_doc.offset + current_doc.length
-    for i, doc in enumerate(docs[1:]):
-        if current_doc.segment == doc.segment:
-            if doc.offset - current_end < ratio * current_doc.length:
-                current_doc = current_doc._replace(
-                    length=doc.offset - current_doc.offset + doc.length
-                )
-                continue
-        merged.append(current_doc)
-        current_doc = doc
-    # TODO: we should ask for list of range instead
-    merged.append(current_doc)
-
-    print(f"Merged {len(docs)} docs into {len(merged)} ranges")
-    original_bytes = sum(d.length for d in docs)
-    merged_bytes = sum(d.length for d in merged)
-    print(f"Going from {original_bytes:_d} bytes to {merged_bytes:_d}")
-    return merged
-
-
-def dl_doc(doc: Document, outfile: TextIO):
+def dl_doc(doc: Document, outfile: BinaryIO):
     start, end = doc.offset, doc.offset + doc.length - 1
-    # TODO: do we need to unzip the file right now ?
-    # TODO: DON'T UNZIP AND KEEP DOCUMENT BOUNDARIES
-    segment = jsonql.open_remote_file(
+    segment_bytes = jsonql.request_get_content(
         CC + doc.segment, headers={"Range": f"bytes={start}-{end}"}
     )
     try:
-        for line in segment:
-            outfile.write(line)
+        # Note: the input is gzip compressed, don't try to uncompress it,
+        # just copy the bytes over to the file
+        outfile.write(segment_bytes)
+        outfile.flush()
     except Exception:
         log.error(f"Error while downloading {doc}")
         raise
@@ -342,34 +351,66 @@ def dl_doc(doc: Document, outfile: TextIO):
 CIRRUS = Path("/private/home/guw/github/cirrus-scripts")
 
 
-def extract_text(warc_file: Path, outfile: Path = None):
-    if not warc_file.suffix == ".gz":
-        warc_file_gz = Path(str(warc_file) + ".gz")
-        # TODO: recompress the files
-        if not warc_file_gz.exists():
-            subprocess.check_call(["gzip", warc_file])
-        warc_file = warc_file_gz
+def recompress_warc_file(warc_file: Path, warc_file_gz: Path = None) -> Path:
+    warc_file_gz = warc_file_gz or Path(str(warc_file) + ".gz")
+    if warc_file_gz.exists():
+        return warc_file_gz
 
-    outfile = outfile or warc_file.with_suffix(".wet")
+    n_docs = 0
+    warc_file_gz_tmp = jsonql._tmp(warc_file_gz)
+    o = gzip.open(warc_file_gz_tmp, "wt")
+    follow_empty_line = False
+    for line in jsonql.open_read(warc_file):
+        if follow_empty_line and line == "WARC/1.0\n":
+            o.close()
+            o = gzip.open(warc_file_gz_tmp, "at")
+            n_docs += 1
+        follow_empty_line = len(line) == 1
+        o.write(line.rstrip("\n"))
+        o.write("\r\n")
+    o.close()
+    warc_file_gz_tmp.rename(warc_file_gz)
+    log.info(f"Recompressed {warc_file_gz}, found {n_docs} documents")
+    warc_file.unlink()
+    return warc_file_gz
+
+
+def extract_lett(warc_file: Path, fasttext_model: Path, outfile: Path) -> dict:
+    """Lett files are tsv files with the following columns:
+
+    language, metadata1, metadata2, url, base64 encoded text document
+    """
+    if not warc_file.suffix == ".gz":
+        # Necessary for files that I manually compressed
+        warc_file = recompress_warc_file(warc_file)
+
+    outfile = outfile or warc_file.with_suffix(".lett.gz")
 
     tmp = jsonql._tmp(outfile)
     cmd = [
+        # Note: this works because I'm using the gwenzek fork of warc2text that produces lett files
         CIRRUS / "bin" / "warc2text",
         "--tag-filters",
         CIRRUS / "mt-filter-list.annotated",
         "--url-filters",
         CIRRUS / "url-filter-list.optimised",
+        "--langid-model",
+        fasttext_model,
         "--output",
         tmp,
-        "--multilang",
         warc_file,
     ]
     print(" ".join(str(x) for x in cmd))
-    subprocess.run(
-        cmd,
-        check=True,
-    )
+    subprocess.run(cmd, check=True)
     tmp.rename(outfile)
+
+    return lett_file_stats(outfile)
+
+
+def lett_file_stats(lett_file: Path) -> dict:
+    stats_txt = subprocess.check_output(f"zcat {lett_file} | cut -f1 | sort | uniq -c", shell=True, text=True)
+    lines = [line.strip().split(" ", 1) for line in stats_txt.splitlines()]
+    return {lang: int(n) for n, lang in lines}
 
 
 if __name__ == "__main__":
@@ -377,10 +418,13 @@ if __name__ == "__main__":
     #     Document(*x)
     #     for x in json.loads((WARC / "williamsfoodservice.co.uk.docs.json").read_text())
     # ]
-    # merge_doc_ranges(docs, ratio=10)
     # website = "liriklagurinalpurba.blogspot.com"
     # dl_from_cc(website, WARC / "mri" / website)
 
+    lang, website = "tir", "028baitong.com"
     # website = "bakanyu.com"
-    website = "028baitong.com"
-    extract_text(WARC / "tir" / website)
+    dl_from_cc(website, WARC / lang / (website + ".gz"))
+    FASTTEXT_MODEL = Path("/large_experiments/nllb/mmt/lidruns/lid_models/2022-02-18_ft_model.bin")
+    lett = WARC.parent / "lett" / lang / (website + ".gz")
+    # extract_lett(WARC / lang / (website + ".gz"), FASTTEXT_MODEL, lett)
+    print(lett_file_stats(lett))
