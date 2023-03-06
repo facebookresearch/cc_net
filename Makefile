@@ -39,6 +39,19 @@ SHELL=/bin/bash
 .SHELLFLAGS = -o pipefail -c
 .DELETE_ON_ERROR:
 
+build-tools:
+	sudo apt install --yes cmake
+	sudo apt install --yes build-essential libboost-system-dev libboost-thread-dev libboost-program-options-dev libboost-test-dev libboost-test-dev
+	sudo apt install --yes unzip pip awscli
+
+ai2-setup: build-tools install
+	aws configure
+	pip install cc_net[getpy]
+	make dl_lm lang=en
+	make dl_lm lang=ru
+	make dl_lm lang=zh
+
+
 install: bin/lid.bin $(KENLM) $(SPM_TRAIN)
 	# Installs dependencies.
 	@if [ -f "data" ]; then\

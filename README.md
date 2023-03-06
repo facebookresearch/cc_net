@@ -68,7 +68,7 @@ Given the CPU required to run the full pipeline on such a big corpus we share a 
 You can reconstruct the corpus used in the paper by using:
 
 ```sh
-python -m cc_net --conf reproduce --dump 2019-09
+python -m cc_net --config reproduce --dump 2019-09
 ```
 
 ## Extract XLM-R data

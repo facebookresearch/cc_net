@@ -20,7 +20,7 @@ __pycache__/
 
 /build/
 /cc_net.egg-info/
-/config/
+#/config/
 /dist/
 /pip-wheel-metadata/
 

@@ -1,0 +1,8 @@
+{
+  "config_name": "end-to-end",
+  "hash_max_ram_gb": 20,
+  "mine_num_processes": 1,
+  "task_parallelism": 48,
+  "hash_parallelism": 192,
+  "move_parallelism": 192
+}

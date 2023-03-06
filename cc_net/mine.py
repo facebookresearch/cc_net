@@ -57,7 +57,8 @@ class Config(NamedTuple):
     num_shards: number of shards to split the dump
     num_segments_per_shard: allow to download a small portion of CC (eg for tests)
     min_len: remove documents shorter than this (in chars)
-    hashes_in_mem: number of shards hashes to use for dedup
+    hash_in_mem: number of shards hashes to use for dedup
+    hash_max_ram_gb: amount of RAM to allocate for deduping (compute hash_in_mem dynamically)
     lang_whitelist: only treat those languages
     lang_blacklist: ignore those languages
     lang_threshold: remove docs whose top language score is lower than this
@@ -68,7 +69,9 @@ class Config(NamedTuple):
     mine_num_processes: number of processes to use for mining
     target_size: size of finals files produce during `regroup` stage
     cleanup_after_regroup: delete intermediary files after regroup
-    task_parallelism: max number of task to run in parallel
+    task_parallelism: max number of task to run in parallel for core pipeline steps
+    hash_parallelism: max number of tasks when computing hashes
+    move_parallelism: max number of tasks when moving (consolidating) segments
     pipeline: restricts the mining pipeline to the given steps. Order is important !
     experiments: (HACK) enable specific experiments in the code
     """
@@ -83,6 +86,7 @@ class Config(NamedTuple):
     metadata: Optional[str] = None
     min_len: int = 300
     hash_in_mem: int = 50
+    hash_max_ram_gb: int = 20
     lang_whitelist: Sequence[str] = []
     lang_blacklist: Sequence[str] = []
     lang_threshold: float = 0.5
@@ -94,12 +98,14 @@ class Config(NamedTuple):
     target_size: str = "4G"
     cleanup_after_regroup: bool = True
     task_parallelism: int = -1
+    hash_parallelism: int = -1
+    move_parallelism: int = -1
     pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
 
     def get_executor(
-        self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1
+        self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1, parallelism: int = -1
     ) -> Executor:
         name = "_".join((name, self.config_name, *self.experiments))
         return execution.get_executor(
@@ -109,7 +115,7 @@ class Config(NamedTuple):
             timeout_hour=timeout_hour,
             mem_gb=mem_gb,
             cpus=cpus,
-            task_parallelism=self.task_parallelism,
+            task_parallelism=parallelism
         )
 
     def get_cc_shard(self, shard: int) -> process_wet_file.CCShardReader:
@@ -142,6 +148,11 @@ class Config(NamedTuple):
     @property
     def will_split(self) -> bool:
         return "split_by_lang" in self.pipeline or "split_by_segment" in self.pipeline
+
+    def num_hash_files_per_shard(self, gb_per_file: float):
+        if self.hash_max_ram_gb > 0:
+            return 1 + self.hash_max_ram_gb // gb_per_file
+        return self.hash_in_mem
 
     def get_lm_languages(self) -> Sequence[str]:
         if self.lm_languages is not None:
@@ -259,7 +270,7 @@ def hashes(conf: Config) -> List[Path]:
     hashes_dir.mkdir(parents=True, exist_ok=True)
     # With FlatHashSet we need ~2Gb of RAM / shard, but we need to account for
     # overhead due to how the dynamic allocation works.
-    ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2)
+    ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2, parallelism=conf.hash_parallelism)
     ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
 
     # Wait a bit so that files appears on the disk.
@@ -327,13 +338,16 @@ def mine(conf: Config) -> List[Path]:
         mem_gb=mem_gb,
         timeout_hour=timeout_hour,
         cpus=conf.mine_num_processes + 1,
+        parallelism=conf.task_parallelism
     )
 
     # Compute hashes firsts.
     if "dedup" in conf.pipeline:
-        hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
+        hash_files = hashes(conf)
+        shards_per_group = conf.num_hash_files_per_shard(2.5)
+        hashes_groups = list(jsonql.grouper(hash_files, shards_per_group))
         hashes_files: Iterable[List[Path]] = [
-            hashes_groups[shard // conf.hash_in_mem] for shard, o in missing_outputs
+            hashes_groups[shard // shards_per_group] for shard, o in missing_outputs
         ]
     else:
         hashes_files = repeat([])
@@ -495,7 +509,7 @@ def regroup(conf: Config, all_dirs: List[Path]) -> Path:
             f"shards ({n_existing} already there).",
         )
 
-    ex = conf.get_executor(f"regroup_{conf.dump}", mem_gb=1, timeout_hour=12, cpus=2)
+    ex = conf.get_executor(f"regroup_{conf.dump}", mem_gb=1, timeout_hour=12, cpus=2, parallelism=conf.move_parallelism)
     ex(_regroup, repeat(conf), inputs, outputs)
 
     return regroup_dir
@@ -520,7 +534,7 @@ def move_segments(conf: Config, all_dirs: Sequence[Path]) -> Path:
 
     regroup_dir.parent.mkdir(exist_ok=True)
     regroup_dir.mkdir(exist_ok=True)
-    ex = conf.get_executor(f"moveseg_{conf.dump}", mem_gb=1, timeout_hour=1, cpus=2)
+    ex = conf.get_executor(f"moveseg_{conf.dump}", mem_gb=1, timeout_hour=1, cpus=2, parallelism=conf.move_parallelism)
 
     def _move_segments(subdir: Path, regroup_dir: Path) -> str:
         n = 0

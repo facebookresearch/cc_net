@@ -46,6 +46,8 @@ import numpy as np
 import psutil  # type: ignore
 import requests
 from typing_extensions import Protocol
+import boto3
+import botocore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +61,13 @@ FilterFn = Callable[[dict], bool]
 FileDescriptor = Union[Path, List[Path], str]
 WritableFileLike = Union[FileDescriptor, TextIO, "SimpleIO", None]
 ReadableFileLike = Union[Iterable[str], FileDescriptor, None]
+
+s3_client = None
+
+
+class RetryableDownloadFailure(Exception):
+    def __init__(self, err: Exception):
+        self.err = err
 
 
 def io_parser():
@@ -370,10 +379,10 @@ class Mapper(Transformer):
 
 
 def run_pipe(
-    command,
-    kwargs: dict = None,
-    file: ReadableFileLike = None,
-    output: WritableFileLike = None,
+        command,
+        kwargs: dict = None,
+        file: ReadableFileLike = None,
+        output: WritableFileLike = None,
 ):
     kwargs = kwargs or {}
     if isinstance(kwargs, argparse.ArgumentParser):
@@ -385,12 +394,12 @@ def run_pipe(
 
 
 def run_pipes(
-    *fns: Union[Transformer, Callable[[Iterable], Iterable]],
-    inputs: Iterable[dict] = None,
-    file: ReadableFileLike = None,
-    output: WritableFileLike = None,
-    processes: int = 1,
-    chunksize: int = 10_000,
+        *fns: Union[Transformer, Callable[[Iterable], Iterable]],
+        inputs: Iterable[dict] = None,
+        file: ReadableFileLike = None,
+        output: WritableFileLike = None,
+        processes: int = 1,
+        chunksize: int = 10_000,
 ):
     """
     Run full document processing pipeline.
@@ -415,7 +424,7 @@ def run_pipes(
         if not t.parallelisable:
             break
         transformers.append(t)
-    pipes = fns[len(transformers) :]
+    pipes = fns[len(transformers):]
 
     log = logging.getLogger(__name__).info
     if inputs is None:
@@ -543,7 +552,7 @@ class JsonReader(Transformer):
                 start = snippet_len - MAX_LEN
             else:
                 start = col - MAX_LEN // 2
-            snippet = e.doc[start : start + MAX_LEN]
+            snippet = e.doc[start: start + MAX_LEN]
             col = col - start
         logging.warning(
             "\n".join(
@@ -625,7 +634,7 @@ class where(Transformer):
     """
 
     def __init__(
-        self, clauses: Sequence[Union[str, FilterFn]], requires: List[str] = []
+            self, clauses: Sequence[Union[str, FilterFn]], requires: List[str] = []
     ):
         super().__init__()
         self.raw_clauses = clauses
@@ -703,14 +712,14 @@ class split(Transformer):
     parallelisable = False
 
     def __init__(
-        self,
-        pattern: Union[Path, str] = None,
-        split_fn: Callable[[dict], str] = None,
-        mkdir: bool = False,
+            self,
+            pattern: Union[Path, str] = None,
+            split_fn: Callable[[dict], str] = None,
+            mkdir: bool = False,
     ):
         super().__init__()
         assert not (
-            pattern and split_fn
+                pattern and split_fn
         ), "split can't have both a pattern and a split_fn"
         if split_fn is not None:
             self.split_fn = split_fn
@@ -792,7 +801,7 @@ def bar_chart(hist, bins):
         if h_size == 0 or dh_size == 0:
             continue
         bar = "█" * h_size
-        out.append(f"{bins[i]:8.3f} {bar:80} ({h:5d}, {h / n:5.1%}) {bins[i+1]:8.3f}")
+        out.append(f"{bins[i]:8.3f} {bar:80} ({h:5d}, {h / n:5.1%}) {bins[i + 1]:8.3f}")
     out.append(f"{bins[-1]:8.3f}")
     return out
 
@@ -977,7 +986,7 @@ def _yield_from(files: list) -> Iterable[str]:
 
 
 def open_write(
-    filename: WritableFileLike, max_size: str = "4G"
+        filename: WritableFileLike, max_size: str = "4G"
 ) -> tp.ContextManager[TextIO]:
     """Open the given file, list of files or files matching the given glob.
 
@@ -1022,7 +1031,7 @@ def parse_size(size):
     unit_map = {"B": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
     unit = size[-1].upper()
     assert (
-        unit in unit_map
+            unit in unit_map
     ), f"Unsupported size unit for {size}. Use one of: {unit_map.keys()}."
     return int(size[:-1]) * unit_map[unit]
 
@@ -1082,36 +1091,70 @@ class MultiFile(SimpleIO):
 _session = functools.lru_cache()(requests.Session)
 
 
-def request_get_content(url: str, n_retry: int = 3) -> bytes:
-    """Retrieve the binary content at url.
-
-    Retry on connection errors.
-    """
+def get_content(primary_url: str, mirror_urls: List[str] = [], n_retry: int = 3):
     t0 = time.time()
-    logging.info(f"Starting download of {url}")
-    for i in range(1, n_retry + 1):
+    n_attempts = n_retry * (1 + len(mirror_urls))
+    for i,url in enumerate(([primary_url] + mirror_urls) * n_retry):
         try:
-            r = _session().get(url)
-            r.raise_for_status()
+            logging.info(f"Attempting download of {url}")
+            bytes = try_get_content(url)
             break
-        except requests.exceptions.RequestException as e:
-            # Sleep and try again on error, unless it's a 404.
-            message = e.args[0] if isinstance(e.args[0], str) else ""
-            if i == n_retry or "Client Error" in message:
-                raise e
+        except RetryableDownloadFailure as e:
+            if i >= n_attempts - 1:
+                raise e.err
+            # Sleep and try again on error
             warnings.warn(
-                f"Swallowed error {e} while downloading {url} ({i} out of {n_retry})"
+                f"Swallowed error {e.err} while downloading {url} ({i} out of {n_retry})"
             )
             time.sleep(10 * 2 ** i)
     dl_time = time.time() - t0
-    dl_speed = len(r.content) / dl_time / 1024
+    dl_speed = len(bytes) / dl_time / 1024
     logging.info(
-        f"Downloaded {url} [{r.status_code}] took {dl_time:.0f}s ({dl_speed:.1f}kB/s)"
+        f"Downloaded {url} took {dl_time:.0f}s ({dl_speed:.1f}kB/s)"
     )
+    return bytes
+
+
+def try_get_content(url: str) -> bytes:
+    if url.startswith("s3://"):
+        return try_get_s3_content(url)
+    return try_get_http_content(url)
+
+
+def try_get_http_content(url: str) -> bytes:
+    """Retrieve the binary content at url."""
+    try:
+        r = _session().get(url)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        message = e.args[0] if isinstance(e.args[0], str) else ""
+        if "Client Error" in message:
+            raise e
+        raise RetryableDownloadFailure(e)
     return r.content
 
 
-def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
+def try_get_s3_content(url: str) -> bytes:
+    global s3_client
+    if not s3_client:
+        s3_client = boto3.client("s3")
+    path = re.search("s3://([^/]*)/(.*)", url)
+    bucket = path.group(1)
+    key = path.group(2)
+    try:
+        buffer = io.BytesIO()
+        s3_client.download_fileobj(Bucket=bucket,
+                                   Key=key,
+                                   Fileobj=buffer,
+                                   Config=boto3.s3.transfer.TransferConfig(use_threads=False))
+    except botocore.exceptions.ClientError as e:
+        message = e.args[0] if isinstance(e.args[0], str) else ""
+        if not "SlowDown" in message:
+            raise e
+        raise RetryableDownloadFailure(e)
+    return buffer.getvalue()
+
+def open_remote_file(url: str, cache: Path = None, mirror_urls: List[str] = []) -> Iterable[str]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
     """
@@ -1121,7 +1164,7 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     # TODO: open the remote file in streaming mode.
     # The hard part is that we need to write the content on disk at the same time,
     # to implement disk caching.
-    raw_bytes = request_get_content(url)
+    raw_bytes = get_content(url, mirror_urls)
     content = io.BytesIO(raw_bytes)
     if url.endswith(".gz"):
         f: TextIO = gzip.open(content, mode="rt")  # type: ignore

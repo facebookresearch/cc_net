@@ -20,7 +20,8 @@ from bs4 import BeautifulSoup  # type: ignore
 
 from cc_net import jsonql
 
-WET_URL_ROOT = "https://commoncrawl.s3.amazonaws.com"
+WET_URL_ROOT = "https://data.commoncrawl.org"
+WET_URL_MIRROR_ROOTS = ["s3://commoncrawl"]
 
 
 logger = logging.getLogger(__name__)
@@ -76,9 +77,9 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
         url = headers[2].split()[1]
         date = headers[3].split()[1]
         digest = headers[6].split()[1]
-        length = int(headers[8].split()[1])
+        length = int((headers[8] if headers[8].startswith("Content-Length") else headers[9]).split()[1])
     except Exception as e:
-        logger.warning("Can't parse header:", e, headers, doc)
+        logger.warning("Can't parse header:", e, headers)
         return None
 
     # Docs are separated by two empty lines.
@@ -182,14 +183,15 @@ class CCSegmentsReader(Iterable[dict]):
         return self._segments
 
     def open_segment(self, segment: str) -> Iterable[str]:
-        url = self.segment_url(segment)
+        url = "/".join((WET_URL_ROOT, segment))
+        mirror_urls = ["/".join((root, segment)) for root in WET_URL_MIRROR_ROOTS]
         file: Optional[Path] = None
         if self.cache_dir:
             file = self.cache_dir / segment.split("/")[-1]
         if not file or not file.exists():
             self.retrieved_segments += 1
 
-        return jsonql.open_remote_file(url, cache=file)
+        return jsonql.open_remote_file(url, cache=file, mirror_urls=mirror_urls)
 
     def __iter__(self) -> Iterator[dict]:
         n = len(self.segments)
