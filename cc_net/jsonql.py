@@ -7,6 +7,7 @@
 """
 Manipulate files containing one json per line.
 """
+import dill
 import argparse
 import collections
 import contextlib
@@ -409,14 +410,17 @@ def run_pipes(
     if expect_json and inputs is None:
         fns = (JsonReader(),) + fns
     transformers = []
+    print(f"============get fns in run_pipes {fns}, count {len(fns)}")
+
     for t in fns:
+        print(f"============checking {t}, is Transformer? {isinstance(t, Transformer)}, is Parall? {t.parallelisable}")
         if not isinstance(t, Transformer):
             break
         if not t.parallelisable:
             break
         transformers.append(t)
     pipes = fns[len(transformers) :]
-
+   
     log = logging.getLogger(__name__).info
     if inputs is None:
         data: Iterable = open_read(file)
@@ -426,31 +430,39 @@ def run_pipes(
     if processes == -1:
         processes = os.cpu_count() or 0
 
+    print(f"============run transformers {transformers}, process count: {processes}, total cpu count: {os.cpu_count()}")
     with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
         if transformers:
             log(f"preparing {transformers}")
+            print(f"================ prepare {transformers}, process count: {processes}")
             transform = stack.enter_context(compose(transformers))
             if processes <= 1:
                 data = transform.map(data)
             else:
                 p = multiprocessing.current_process()
                 log(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
-                pool = stack.enter_context(
-                    multiprocessing.Pool(
+                cp = multiprocessing.Pool(
                         processes=processes,
                         initializer=_set_global_transformer,
                         initargs=(transform,),
                     )
+                log("done with muti pool")
+                pool = stack.enter_context(
+                    cp
                 )
                 data = pool.imap_unordered(
                     _global_transformer, data, chunksize=chunksize
                 )
 
         for fn in pipes:
+            print(f"======================= now handling: {fn}")
             if isinstance(fn, Transformer):
+                print(f"======================= {fn} is Transformer")
                 data = fn.map(data)
             else:
+                print(f"======================= {fn} is not Transformer")
                 data = fn(data)
+            
 
         write_jsons(data, output)
 
@@ -503,6 +515,7 @@ def write_jsons(source: Iterable[dict], file: WritableFileLike) -> None:
             if isinstance(res, str):
                 res = res.rstrip("\n")
             print(res, file=o)
+
 
 
 class JsonReader(Transformer):
@@ -638,8 +651,10 @@ class where(Transformer):
 
     def do(self, doc: dict) -> Optional[dict]:
         assert self.clauses
-        if not doc or not all((c(doc) for c in self.clauses)):
+        if not doc or not all((dill.loads(c)(doc) for c in self.clauses)):
+            # print(f"=====not load for lan {doc.get('language')}")
             return None
+        # print(f"===== load for lan {doc.get('language')}")
         self.n_selected += 1
         return doc
 

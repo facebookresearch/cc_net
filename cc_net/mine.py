@@ -10,7 +10,7 @@ filter the documents.
 
 The pipeline parameters are described in the `Config` class.
 """
-
+import dill
 import hashlib
 import json
 import time
@@ -57,7 +57,7 @@ class Config(NamedTuple):
     num_shards: number of shards to split the dump
     num_segments_per_shard: allow to download a small portion of CC (eg for tests)
     min_len: remove documents shorter than this (in chars)
-    hashes_in_mem: number of shards hashes to use for dedup
+    hash_in_mem: number of shards hashes to use for dedup
     lang_whitelist: only treat those languages
     lang_blacklist: ignore those languages
     lang_threshold: remove docs whose top language score is lower than this
@@ -102,9 +102,11 @@ class Config(NamedTuple):
         self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1
     ) -> Executor:
         name = "_".join((name, self.config_name, *self.experiments))
+        log_dir = self.output_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
         return execution.get_executor(
             name,
-            self.output_dir / "logs",
+            log_dir,
             self.execution,
             timeout_hour=timeout_hour,
             mem_gb=mem_gb,
@@ -194,15 +196,17 @@ TEST_CONFIG = BASE_CONFIG._replace(
     config_name="test",
     dump="2019-09",
     output_dir=Path("test_data"),
-    execution="local",
-    num_shards=4,
+    execution="spark",
+    num_shards=3,
     num_segments_per_shard=1,
     hash_in_mem=2,
     mine_num_processes=2,
-    lang_whitelist=["de", "it", "fr"],
-    target_size="32M",
+    #lang_whitelist=["de", "it", "fr"],
+    lang_whitelist=["en"],
+    target_size="320M",
     cleanup_after_regroup=False,
     cache_dir=Path("test_data/wet_cache"),
+    task_parallelism=3,
 )
 
 PREDEF_CONFIGS = {
@@ -259,6 +263,7 @@ def hashes(conf: Config) -> List[Path]:
     hashes_dir.mkdir(parents=True, exist_ok=True)
     # With FlatHashSet we need ~2Gb of RAM / shard, but we need to account for
     # overhead due to how the dynamic allocation works.
+    print(f"=============missing_outputs num {missing_outputs}, transpose out: {_transpose(missing_outputs)}")
     ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2)
     ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
 
@@ -270,6 +275,7 @@ def hashes(conf: Config) -> List[Path]:
 
 def _hashes_shard(conf: Config, shard: int, output: Path):
     tmp_output = tmp(output)
+    print(f"===========running hash shard: {shard}, output: {output}, tmp {tmp_output}")
     jsonql.run_pipes(
         dedup.HashesCollector(field="raw_content", output=tmp_output),
         inputs=conf.get_cc_shard(shard),
@@ -321,13 +327,6 @@ def mine(conf: Config) -> List[Path]:
     if not missing_outputs:
         return outputs
 
-    mined_dir.mkdir(parents=True, exist_ok=True)
-    ex = conf.get_executor(
-        f"mine_{conf.dump}",
-        mem_gb=mem_gb,
-        timeout_hour=timeout_hour,
-        cpus=conf.mine_num_processes + 1,
-    )
 
     # Compute hashes firsts.
     if "dedup" in conf.pipeline:
@@ -337,6 +336,17 @@ def mine(conf: Config) -> List[Path]:
         ]
     else:
         hashes_files = repeat([])
+
+    #JUNJUN
+    #return outputs
+
+    mined_dir.mkdir(parents=True, exist_ok=True)
+    ex = conf.get_executor(
+        f"mine_shard_{conf.dump}",
+        mem_gb=mem_gb,
+        timeout_hour=timeout_hour,
+        cpus=conf.mine_num_processes + 1,
+    )
 
     ex(_mine_shard, repeat(conf), hashes_files, *_transpose(missing_outputs))
 
@@ -350,8 +360,10 @@ def _get_segment(tmp_output: Path, doc: dict) -> str:
 
 
 def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> str:
+    print(f"==_mine_shard called: conf: {conf}, hashes: {hashes}, shard: {shard}, output: {output} ")
     assert conf.pipeline
     tmp_output = tmp(output)
+    print(f"===output for shard: {shard}, output: {output}, tmp: {tmp_output} ")
     if "hashes" in conf.experiments:
         # HACK: used for generating paper figures
         hashes_in_mem = shard
@@ -377,16 +389,18 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         model=lang_id, field="raw_content", out_field="lid_after_dedup", top=5
     )
 
+    #JUNJUN
+    # steps["keep_lang"] = None
     if conf.lang_blacklist:
         steps["keep_lang"] = jsonql.where(
-            [lambda doc: doc.get("language") not in set(conf.lang_blacklist)]
+           [dill.dumps(lambda doc: doc.get("language") not in set(conf.lang_blacklist))]
         )
     elif conf.lang_whitelist:
         steps["keep_lang"] = jsonql.where(
-            [lambda doc: doc.get("language") in set(conf.lang_whitelist)]
+           [dill.dumps(lambda doc: doc.get("language") in set(conf.lang_whitelist))]
         )
     else:
-        steps["keep_lang"] = None
+       steps["keep_lang"] = None
 
     tok_field = "tokenized"
     steps["sp"] = perplexity.MultiSentencePiece(
@@ -427,8 +441,14 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         split_fn=lambda doc: _get_segment(tmp_output, doc), mkdir=True
     )
 
-    pipeline = filter(None, (steps[s] for s in conf.pipeline))
+    remainsteps = {s: steps[s] for s in conf.pipeline}
 
+    print(f"==steps: {remainsteps}")
+
+    pipeline = filter(None, (steps[s] for s in conf.pipeline))
+    #JUNJUN
+    
+    #pipeline = list(pipeline)[0:3]
     jsonql.run_pipes(
         *pipeline,
         inputs=cc_shard,
