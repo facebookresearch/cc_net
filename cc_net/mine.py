@@ -63,6 +63,7 @@ class Config(NamedTuple):
     lang_threshold: remove docs whose top language score is lower than this
     keep_bucket: keep only those perplexity bucket chose from (head, middle, tail, all)
     lm_dir: folder containing LMs
+    lm_id_path: path for the language identity bin 
     lm_languages: only use LMs for the following languages
     cutoff: cutoff file to use for split in head/middle/tail
     mine_num_processes: number of processes to use for mining
@@ -88,6 +89,7 @@ class Config(NamedTuple):
     lang_threshold: float = 0.5
     keep_bucket: Sequence[str] = []
     lm_dir: Path = Path("data/lm_sp")
+    lm_id_path: Path = Path("bin/lid.bin")
     cutoff: Path = CUTOFF_CSV
     lm_languages: Optional[Sequence[str]] = None
     mine_num_processes: int = 16
@@ -206,15 +208,53 @@ TEST_CONFIG = BASE_CONFIG._replace(
     target_size="320M",
     cleanup_after_regroup=False,
     cache_dir=Path("test_data/wet_cache"),
-    task_parallelism=3,
+    task_parallelism=4,
+)
+
+DBFS_ROOT_PATH='/dbfs/tmp/users/jun.wan/cc_net/'
+
+TEST_SPARK_CONFIG = BASE_CONFIG._replace(
+    #output_dir: Path = Path("data")
+    #mined_dir: str = "mined"
+    #lm_dir: Path = Path("data/lm_sp")
+    #cutoff = Path(CUTOFF_CSV)
+    #cache_dir: Optional[Path] = None
+
+    #metadata: Optional[str] = None
+    #min_len: int = 300
+    #lang_blacklist: Sequence[str] = []
+    #lang_threshold: float = 0.5
+    #keep_bucket: Sequence[str] = []
+    #lm_languages: Optional[Sequence[str]] = None
+    #pipeline: Sequence[str] = DEFAULT_PIPELINE
+    #experiments: Sequence[str] = []
+    config_name="test_spark",
+    dump="2019-09",
+    output_dir=Path(DBFS_ROOT_PATH + "test_data"),
+    mined_dir= DBFS_ROOT_PATH + "test_data/mined",
+    execution="spark",
+    num_shards=3,
+    num_segments_per_shard=1,
+    hash_in_mem=2,
+    mine_num_processes=2,
+    #lang_whitelist=["de", "it", "fr"],
+    lang_whitelist=["en"],
+    lm_dir=Path(DBFS_ROOT_PATH + "data/lm_sp"),
+    lm_id_path = Path(DBFS_ROOT_PATH + "bin/lid.bin"),
+    cutoff = Path(CUTOFF_CSV),
+    target_size="320M",
+    cleanup_after_regroup=False,
+    cache_dir=Path(DBFS_ROOT_PATH + "test_data/wet_cache"),
+    task_parallelism=4,
 )
 
 PREDEF_CONFIGS = {
     "base": BASE_CONFIG,
     "by_lang": BYLANG_CONFIG,
     "test": TEST_CONFIG,
+    "test_spark": TEST_SPARK_CONFIG,
     "test_slurm": TEST_CONFIG._replace(execution="slurm,partition=dev"),
-    "debug": TEST_CONFIG._replace(config_name="debug", mine_num_processes=0),
+    "debug": TEST_CONFIG._replace(config_name="debug", mine_num_processes=0, execution="local", task_parallelism=-1),
     "reproduce": REPRODUCE_CONFIG,
     "augment": BASE_CONFIG._replace(
         config_name="augment", dump="2019-13", lang_blacklist=["en"]
@@ -372,7 +412,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     cc_shard = conf.get_cc_shard(shard)
 
     steps: Dict[str, Optional[jsonql.Transformer]] = {}
-    lang_id = Path("bin") / "lid.bin"
+    lang_id = conf.lm_id_path
     steps["lid_before_dedup"] = split_by_lang.Classifier(
         model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
     )
