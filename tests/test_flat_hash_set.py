@@ -69,7 +69,7 @@ def check_reload(h, dump, load, tmp_path):
 @pytest.mark.parametrize("hash_set_cls", [FlatHashSet, NaiveHashSet])
 def test_loading(tmp_path, hash_set_cls):
     h = hash_set_cls()
-    x = np.random.randint(0, 2 ** 32, (100,), dtype=h.dtype)
+    x = np.random.randint(0, 2**32, (100,), dtype=h.dtype)
     h.add(x)
 
     check_reload(h, hash_set_cls.dump, hash_set_cls.load, tmp_path)

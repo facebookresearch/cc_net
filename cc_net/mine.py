@@ -10,7 +10,6 @@ filter the documents.
 
 The pipeline parameters are described in the `Config` class.
 """
-import dill
 import hashlib
 import json
 import time
@@ -21,6 +20,7 @@ from itertools import repeat
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
+import dill
 import func_argparse
 
 # Local scripts
@@ -63,7 +63,7 @@ class Config(NamedTuple):
     lang_threshold: remove docs whose top language score is lower than this
     keep_bucket: keep only those perplexity bucket chose from (head, middle, tail, all)
     lm_dir: folder containing LMs
-    lm_id_path: path for the language identity bin 
+    lm_id_path: path for the language identity bin
     lm_languages: only use LMs for the following languages
     cutoff: cutoff file to use for split in head/middle/tail
     mine_num_processes: number of processes to use for mining
@@ -203,7 +203,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
     num_segments_per_shard=1,
     hash_in_mem=2,
     mine_num_processes=2,
-    #lang_whitelist=["de", "it", "fr"],
+    # lang_whitelist=["de", "it", "fr"],
     lang_whitelist=["en"],
     target_size="320M",
     cleanup_after_regroup=False,
@@ -211,31 +211,31 @@ TEST_CONFIG = BASE_CONFIG._replace(
     task_parallelism=4,
 )
 
-DBFS_ROOT_PATH='/dbfs/tmp/cc_net/'
+DBFS_ROOT_PATH = "/dbfs/tmp/cc_net/"
 
 TEST_SPARK_CONFIG = BASE_CONFIG._replace(
-    #metadata: Optional[str] = None
-    #min_len: int = 300
-    #lang_blacklist: Sequence[str] = []
-    #lang_threshold: float = 0.5
-    #keep_bucket: Sequence[str] = []
-    #lm_languages: Optional[Sequence[str]] = None
-    #pipeline: Sequence[str] = DEFAULT_PIPELINE
-    #experiments: Sequence[str] = []
+    # metadata: Optional[str] = None
+    # min_len: int = 300
+    # lang_blacklist: Sequence[str] = []
+    # lang_threshold: float = 0.5
+    # keep_bucket: Sequence[str] = []
+    # lm_languages: Optional[Sequence[str]] = None
+    # pipeline: Sequence[str] = DEFAULT_PIPELINE
+    # experiments: Sequence[str] = []
     config_name="test_spark",
     dump="2019-09",
     output_dir=Path(DBFS_ROOT_PATH + "test_data"),
-    mined_dir= DBFS_ROOT_PATH + "test_data/mined",
+    mined_dir=DBFS_ROOT_PATH + "test_data/mined",
     execution="spark",
     num_shards=3,
     num_segments_per_shard=1,
     hash_in_mem=2,
     mine_num_processes=2,
-    #lang_whitelist=["de", "it", "fr"],
+    # lang_whitelist=["de", "it", "fr"],
     lang_whitelist=["en"],
     lm_dir=Path(DBFS_ROOT_PATH + "data/lm_sp"),
-    lm_id_path = Path(DBFS_ROOT_PATH + "bin/lid.bin"),
-    cutoff = Path(CUTOFF_CSV),
+    lm_id_path=Path(DBFS_ROOT_PATH + "bin/lid.bin"),
+    cutoff=Path(CUTOFF_CSV),
     target_size="320M",
     cleanup_after_regroup=False,
     cache_dir=Path(DBFS_ROOT_PATH + "test_data/wet_cache"),
@@ -248,7 +248,12 @@ PREDEF_CONFIGS = {
     "test": TEST_CONFIG,
     "test_spark": TEST_SPARK_CONFIG,
     "test_slurm": TEST_CONFIG._replace(execution="slurm,partition=dev"),
-    "debug": TEST_CONFIG._replace(config_name="debug", mine_num_processes=0, execution="local", task_parallelism=-1),
+    "debug": TEST_CONFIG._replace(
+        config_name="debug",
+        mine_num_processes=0,
+        execution="local",
+        task_parallelism=-1,
+    ),
     "reproduce": REPRODUCE_CONFIG,
     "augment": BASE_CONFIG._replace(
         config_name="augment", dump="2019-13", lang_blacklist=["en"]
@@ -361,7 +366,6 @@ def mine(conf: Config) -> List[Path]:
     if not missing_outputs:
         return outputs
 
-
     # Compute hashes firsts.
     if "dedup" in conf.pipeline:
         hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
@@ -370,7 +374,6 @@ def mine(conf: Config) -> List[Path]:
         ]
     else:
         hashes_files = repeat([])
-
 
     mined_dir.mkdir(parents=True, exist_ok=True)
     ex = conf.get_executor(
@@ -419,17 +422,20 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         model=lang_id, field="raw_content", out_field="lid_after_dedup", top=5
     )
 
-
     if conf.lang_blacklist:
         steps["keep_lang"] = jsonql.where(
-           [dill.dumps(lambda doc: doc.get("language") not in set(conf.lang_blacklist))]
+            [
+                dill.dumps(
+                    lambda doc: doc.get("language") not in set(conf.lang_blacklist)
+                )
+            ]
         )
     elif conf.lang_whitelist:
         steps["keep_lang"] = jsonql.where(
-           [dill.dumps(lambda doc: doc.get("language") in set(conf.lang_whitelist))]
+            [dill.dumps(lambda doc: doc.get("language") in set(conf.lang_whitelist))]
         )
     else:
-       steps["keep_lang"] = None
+        steps["keep_lang"] = None
 
     tok_field = "tokenized"
     steps["sp"] = perplexity.MultiSentencePiece(
@@ -475,7 +481,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     print(f"==steps: {remainsteps}")
 
     pipeline = filter(None, (steps[s] for s in conf.pipeline))
-    
+
     jsonql.run_pipes(
         *pipeline,
         inputs=cc_shard,
@@ -689,6 +695,8 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
 
     if conf.config_name == "test":
         _validate_test(conf, conf.get_mined_dir(regroup=True))
+
+    print("==Completed all pipelines!")
 
 
 if __name__ == "__main__":
