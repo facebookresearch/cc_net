@@ -410,10 +410,9 @@ def run_pipes(
     if expect_json and inputs is None:
         fns = (JsonReader(),) + fns
     transformers = []
-    print(f"============get fns in run_pipes {fns}, count {len(fns)}")
+    print(f"==get fns in run_pipes {fns}, count {len(fns)}")
 
     for t in fns:
-        print(f"============checking {t}, is Transformer? {isinstance(t, Transformer)}, is Parall? {t.parallelisable}")
         if not isinstance(t, Transformer):
             break
         if not t.parallelisable:
@@ -430,11 +429,9 @@ def run_pipes(
     if processes == -1:
         processes = os.cpu_count() or 0
 
-    print(f"============run transformers {transformers}, process count: {processes}, total cpu count: {os.cpu_count()}")
     with contextlib.suppress(BrokenPipeError), contextlib.ExitStack() as stack:
         if transformers:
             log(f"preparing {transformers}")
-            print(f"================ prepare {transformers}, process count: {processes}")
             transform = stack.enter_context(compose(transformers))
             if processes <= 1:
                 data = transform.map(data)
@@ -455,15 +452,12 @@ def run_pipes(
                 )
 
         for fn in pipes:
-            print(f"======================= now handling: {fn}")
+            print(f"==now handling: {fn}")
             if isinstance(fn, Transformer):
-                print(f"======================= {fn} is Transformer")
                 data = fn.map(data)
             else:
-                print(f"======================= {fn} is not Transformer")
                 data = fn(data)
             
-
         write_jsons(data, output)
 
 
@@ -652,9 +646,7 @@ class where(Transformer):
     def do(self, doc: dict) -> Optional[dict]:
         assert self.clauses
         if not doc or not all((dill.loads(c)(doc) for c in self.clauses)):
-            # print(f"=====not load for lan {doc.get('language')}")
             return None
-        # print(f"===== load for lan {doc.get('language')}")
         self.n_selected += 1
         return doc
 

@@ -94,10 +94,7 @@ def get_executor(
 def get_spark_executor(
     name: str,
 ):
-    #conf = SparkConf().setAppName(name).setMaster("local[5]")
-    #sc = SparkContext(conf=conf)
     sc = SparkContext.getOrCreate()
-    print("===done with spark context")
     return sc
 
 
@@ -108,26 +105,16 @@ def map_spark_array(
     *args: Iterable,
 ):
     f_name = function.__name__
-    print(f"===calling spark for func: {f_name}, with arg's len {len(args)}, args {args}")
+    print(f"==calling spark for func: {f_name}, with arg's len {len(args)}, args {args}")
 
-    #newargs = []
-
-    #for x in range(len(args)):
-    #    newargs[x].append(args[x])
     pfunc = lambda *p:  p
-
-
     newargs = list(map(pfunc, *args))
-
-    print(f"=====new args {newargs}")
 
     assert len(args) > 0, f"No arguments passed to {f_name}"
     
     rdd = sc.parallelize(newargs, task_parallelism)
     rdd = rdd.map(lambda p: function(*p))
-    #rdd = rdd.map(function)
     rdd.collect()
-    #print(f"===result in map_spark: {tmp} ")
 
 
 def map_array_and_wait(

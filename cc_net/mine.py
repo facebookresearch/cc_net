@@ -211,15 +211,9 @@ TEST_CONFIG = BASE_CONFIG._replace(
     task_parallelism=4,
 )
 
-DBFS_ROOT_PATH='/dbfs/tmp/users/jun.wan/cc_net/'
+DBFS_ROOT_PATH='/dbfs/tmp/cc_net/'
 
 TEST_SPARK_CONFIG = BASE_CONFIG._replace(
-    #output_dir: Path = Path("data")
-    #mined_dir: str = "mined"
-    #lm_dir: Path = Path("data/lm_sp")
-    #cutoff = Path(CUTOFF_CSV)
-    #cache_dir: Optional[Path] = None
-
     #metadata: Optional[str] = None
     #min_len: int = 300
     #lang_blacklist: Sequence[str] = []
@@ -303,7 +297,7 @@ def hashes(conf: Config) -> List[Path]:
     hashes_dir.mkdir(parents=True, exist_ok=True)
     # With FlatHashSet we need ~2Gb of RAM / shard, but we need to account for
     # overhead due to how the dynamic allocation works.
-    print(f"=============missing_outputs num {missing_outputs}, transpose out: {_transpose(missing_outputs)}")
+    # print(f"==missing_outputs num {missing_outputs}, transpose out: {_transpose(missing_outputs)}")
     ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2)
     ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
 
@@ -315,7 +309,7 @@ def hashes(conf: Config) -> List[Path]:
 
 def _hashes_shard(conf: Config, shard: int, output: Path):
     tmp_output = tmp(output)
-    print(f"===========running hash shard: {shard}, output: {output}, tmp {tmp_output}")
+    print(f"==running hash shard: {shard}, output: {output}, tmp {tmp_output}")
     jsonql.run_pipes(
         dedup.HashesCollector(field="raw_content", output=tmp_output),
         inputs=conf.get_cc_shard(shard),
@@ -377,8 +371,6 @@ def mine(conf: Config) -> List[Path]:
     else:
         hashes_files = repeat([])
 
-    #JUNJUN
-    #return outputs
 
     mined_dir.mkdir(parents=True, exist_ok=True)
     ex = conf.get_executor(
@@ -400,10 +392,8 @@ def _get_segment(tmp_output: Path, doc: dict) -> str:
 
 
 def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> str:
-    print(f"==_mine_shard called: conf: {conf}, hashes: {hashes}, shard: {shard}, output: {output} ")
     assert conf.pipeline
     tmp_output = tmp(output)
-    print(f"===output for shard: {shard}, output: {output}, tmp: {tmp_output} ")
     if "hashes" in conf.experiments:
         # HACK: used for generating paper figures
         hashes_in_mem = shard
@@ -429,8 +419,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         model=lang_id, field="raw_content", out_field="lid_after_dedup", top=5
     )
 
-    #JUNJUN
-    # steps["keep_lang"] = None
+
     if conf.lang_blacklist:
         steps["keep_lang"] = jsonql.where(
            [dill.dumps(lambda doc: doc.get("language") not in set(conf.lang_blacklist))]
@@ -486,9 +475,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     print(f"==steps: {remainsteps}")
 
     pipeline = filter(None, (steps[s] for s in conf.pipeline))
-    #JUNJUN
     
-    #pipeline = list(pipeline)[0:3]
     jsonql.run_pipes(
         *pipeline,
         inputs=cc_shard,

@@ -243,7 +243,7 @@ class CCShardReader(CCSegmentsReader):
             return self._segments
         segments = cc_segments(self.dump, self.cache_dir)
         n = len(segments)
-        print(f">>>>>>>>total segments: {n}, called from shard: {self.shard}")
+        print(f"==total segments: {n}, called from shard: {self.shard}")
         if self.num_shards < 0:
             self.num_shards = n // self.num_segments_per_shard
         i_min = (self.shard * n) // self.num_shards
