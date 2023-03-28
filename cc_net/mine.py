@@ -34,6 +34,7 @@ FILE_DIR = Path(__file__).parent
 CUTOFF_CSV = FILE_DIR / "data" / "cutoff.csv"
 
 DEFAULT_PIPELINE = [
+    "hash",
     "dedup",
     "lid",
     "keep_lang",
@@ -206,7 +207,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
     # lang_whitelist=["de", "it", "fr"],
     lang_whitelist=["en"],
     target_size="320M",
-    cleanup_after_regroup=False,
+    cleanup_after_regroup=True,
     cache_dir=Path("test_data/wet_cache"),
     task_parallelism=4,
 )
@@ -367,7 +368,7 @@ def mine(conf: Config) -> List[Path]:
         return outputs
 
     # Compute hashes firsts.
-    if "dedup" in conf.pipeline:
+    if "hash" in conf.pipeline:
         hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
         hashes_files: Iterable[List[Path]] = [
             hashes_groups[shard // conf.hash_in_mem] for shard, o in missing_outputs
@@ -476,11 +477,15 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         split_fn=lambda doc: _get_segment(tmp_output, doc), mkdir=True
     )
 
-    remainsteps = {s: steps[s] for s in conf.pipeline}
+    remainsteps = []
+    pipeline = []
+
+    for s in conf.pipeline:
+        if s in steps.keys():
+            remainsteps.append(s)
+            pipeline.append(steps[s])
 
     print(f"==steps: {remainsteps}")
-
-    pipeline = filter(None, (steps[s] for s in conf.pipeline))
 
     jsonql.run_pipes(
         *pipeline,

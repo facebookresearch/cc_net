@@ -1119,7 +1119,11 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
     """
-    if cache and cache.exists():
+    valid_cache = False
+    if cache and cache.exists() and os.path.getsize(cache) > 1 :
+        valid_cache = True
+
+    if cache and valid_cache:
         return open_read(cache)
 
     # TODO: open the remote file in streaming mode.
@@ -1132,11 +1136,11 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     else:
         f = io.TextIOWrapper(content)
 
-    if cache and not cache.exists():
+    if cache and not valid_cache:
         # The file might have been created while downloading/writing.
         tmp_cache = _tmp(cache)
         tmp_cache.write_bytes(raw_bytes)
-        if not cache.exists():
+        if not valid_cache:
             tmp_cache.replace(cache)
         else:
             tmp_cache.unlink()
