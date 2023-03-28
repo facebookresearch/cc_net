@@ -1120,7 +1120,7 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     Assumes that the file is small, and fetch it when this function is called.
     """
     valid_cache = False
-    if cache and cache.exists() and os.path.getsize(cache) > 1 :
+    if cache and cache.exists() and os.path.getsize(cache) > 1:
         valid_cache = True
 
     if cache and valid_cache:

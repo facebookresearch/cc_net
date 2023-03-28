@@ -105,9 +105,7 @@ def map_spark_array(
     *args: Iterable,
 ):
     f_name = function.__name__
-    print(
-        f"==calling spark for func: {f_name}, with arg's len {len(args)}"
-    )
+    print(f"==calling spark for func: {f_name}, with arg's len {len(args)}")
 
     pfunc = lambda *p: p
     newargs = list(map(pfunc, *args))
