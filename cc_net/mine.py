@@ -32,6 +32,7 @@ from cc_net.execution import Executor
 # Constant
 FILE_DIR = Path(__file__).parent
 CUTOFF_CSV = FILE_DIR / "data" / "cutoff.csv"
+LID_BIN = FILE_DIR / "bin" / "lid.bin"
 
 DEFAULT_PIPELINE = [
     "hash",
@@ -90,7 +91,7 @@ class Config(NamedTuple):
     lang_threshold: float = 0.5
     keep_bucket: Sequence[str] = []
     lm_dir: Path = Path("data/lm_sp")
-    lm_id_path: Path = Path("bin/lid.bin")
+    lm_id_path: Path = LID_BIN
     cutoff: Path = CUTOFF_CSV
     lm_languages: Optional[Sequence[str]] = None
     mine_num_processes: int = 16
@@ -100,6 +101,8 @@ class Config(NamedTuple):
     pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
+    dbfs_lm_dir: str = ""
+    dbfs_lm_id_path: str = ""
 
     def get_executor(
         self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1
@@ -165,6 +168,19 @@ class Config(NamedTuple):
             return self.output_dir / f"{self.mined_dir}_split" / self.dump
         return self.output_dir / self.mined_dir / self.dump
 
+    def download_dbfs_file_to_local(self, source: Path, target: Path, overwrite: bool = False) -> bool:
+        if (not overwrite and target.exists()):
+            return True
+        
+        if (not source.startswith("/dbfs")):
+            print(f"==can not download file from dbfs to local as source path does not start from /dbfs: {str(source)}")
+            return False
+        
+        from databricks.sdk.runtime import dbutils
+        copied = dbutils.fs.cp(source.replace('/dbfs','dbfs:'), "file:" + str(target.absolute()))
+        print(f"==copied: {copied}, source: {str(source)}, target:{str(target)}")
+        return copied
+
 
 BASE_CONFIG = Config()
 
@@ -208,21 +224,13 @@ TEST_CONFIG = BASE_CONFIG._replace(
     lang_whitelist=["en"],
     target_size="320M",
     cleanup_after_regroup=True,
-    cache_dir=Path("test_data/wet_cache"),
+    cache_dir=Path("test_data2_wet_cache"),
     task_parallelism=4,
 )
 
 DBFS_ROOT_PATH = "/dbfs/tmp/cc_net/"
 
 TEST_SPARK_CONFIG = BASE_CONFIG._replace(
-    # metadata: Optional[str] = None
-    # min_len: int = 300
-    # lang_blacklist: Sequence[str] = []
-    # lang_threshold: float = 0.5
-    # keep_bucket: Sequence[str] = []
-    # lm_languages: Optional[Sequence[str]] = None
-    # pipeline: Sequence[str] = DEFAULT_PIPELINE
-    # experiments: Sequence[str] = []
     config_name="test_spark",
     dump="2019-09",
     output_dir=Path(DBFS_ROOT_PATH + "test_data"),
@@ -232,14 +240,10 @@ TEST_SPARK_CONFIG = BASE_CONFIG._replace(
     num_segments_per_shard=1,
     hash_in_mem=2,
     mine_num_processes=2,
-    # lang_whitelist=["de", "it", "fr"],
     lang_whitelist=["en"],
-    lm_dir=Path(DBFS_ROOT_PATH + "data/lm_sp"),
-    lm_id_path=Path(DBFS_ROOT_PATH + "bin/lid.bin"),
-    cutoff=Path(CUTOFF_CSV),
     target_size="320M",
     cleanup_after_regroup=False,
-    cache_dir=Path(DBFS_ROOT_PATH + "test_data/wet_cache"),
+    cache_dir=Path("test_data/wet_cache"),
     task_parallelism=4,
 )
 
@@ -403,6 +407,16 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         hashes_in_mem = shard
         hashes = hashes[: HASHES_IN_MEM[hashes_in_mem]]
         shard = 0
+    
+    # ensure all needed model is ready locally:
+    # if (conf.execution == 'spark'):
+    #     if (conf.dbfs_lm_id_path.startswith('/dbfs')):
+    #         conf.download_dbfs_file_to_local(conf.dbfs_lm_id_path, conf.lm_id_path)
+    #     if (conf.dbfs_lm_dir.startswith('/dbfs')):
+    #         for l in conf.get_lm_languages():
+    #             conf.download_dbfs_file_to_local(conf.dbfs_lm_dir / f"{l}.sp.model", conf.lm_dir / f"{l}.sp.model")
+    #             conf.download_dbfs_file_to_local(conf.dbfs_lm_dir / f"{l}.arpa.bin", conf.lm_dir / f"{l}.arpa.bin")
+
     cc_shard = conf.get_cc_shard(shard)
 
     steps: Dict[str, Optional[jsonql.Transformer]] = {}
