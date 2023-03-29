@@ -13,8 +13,8 @@ The pipeline parameters are described in the `Config` class.
 import hashlib
 import json
 import time
-import warnings
 import traceback
+import warnings
 from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import repeat
@@ -172,11 +172,11 @@ class Config(NamedTuple):
     # def download_dbfs_file_to_local(self, source: Path, target: Path, overwrite: bool = False) -> bool:
     #     if (not overwrite and target.exists()):
     #         return True
-        
+
     #     if (not source.startswith("/dbfs")):
     #         print(f"==can not download file from dbfs to local as source path does not start from /dbfs: {str(source)}")
     #         return False
-        
+
     #     from databricks.sdk.runtime import dbutils
     #     copied = dbutils.fs.cp(source.replace('/dbfs','dbfs:'), "file:" + str(target.absolute()))
     #     print(f"==copied: {copied}, source: {str(source)}, target:{str(target)}")
@@ -401,16 +401,20 @@ def _get_segment(tmp_output: Path, doc: dict) -> str:
 
 
 def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> str:
-    print(f"==calling_mine_shard, with shard: {shard}, output: {output}, hashes: {hashes}")
+    print(
+        f"==calling_mine_shard, with shard: {shard}, output: {output}, hashes: {hashes}"
+    )
 
     # Workaround DBFS super unstable /dbfs mnt issue.
-    # check if the worknode can access the hashes, if not just skip 
+    # check if the worknode can access the hashes, if not just skip
     # then we can keep minding shards instead of error out the whole cluster for single failure
-    if conf.execution == 'spark':
+    if conf.execution == "spark":
         try:
             can_access = all(h.exists() for h in hashes)
         except Exception as ex:
-            print(f"==Failed to access hashes! error type:{type(ex).__name__}, details: {traceback.format_exc()}")
+            print(
+                f"==Failed to access hashes! error type:{type(ex).__name__}, details: {traceback.format_exc()}"
+            )
             return "skipped"
 
     assert conf.pipeline
@@ -420,7 +424,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         hashes_in_mem = shard
         hashes = hashes[: HASHES_IN_MEM[hashes_in_mem]]
         shard = 0
-    
+
     # ensure all needed model is ready locally:
     # if (conf.execution == 'spark'):
     #     if (conf.dbfs_lm_id_path.startswith('/dbfs')):
