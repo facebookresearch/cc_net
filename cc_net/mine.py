@@ -310,6 +310,7 @@ def hashes(conf: Config) -> List[Path]:
     # overhead due to how the dynamic allocation works.
     # print(f"==missing_outputs num {missing_outputs}, transpose out: {_transpose(missing_outputs)}")
     ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2)
+    print(f"==calling _hashes_shard to continue with {len(missing_outputs)} missing output")
     ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
 
     # Wait a bit so that files appears on the disk.
@@ -388,7 +389,7 @@ def mine(conf: Config) -> List[Path]:
         timeout_hour=timeout_hour,
         cpus=conf.mine_num_processes + 1,
     )
-
+    print(f"==calling _mine_shard to continue with {len(missing_outputs)} missing output")
     ex(_mine_shard, repeat(conf), hashes_files, *_transpose(missing_outputs))
 
     assert all(o.exists() for o in outputs)
@@ -416,7 +417,10 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
                 f"==Failed to access hashes! error type:{type(ex).__name__}, details: {traceback.format_exc()}"
             )
             return "skipped"
-
+    
+    print(
+        f"==continue _mine_shard, with shard: {shard}, output: {output}"
+    )
     assert conf.pipeline
     tmp_output = tmp(output)
     if "hashes" in conf.experiments:
@@ -516,7 +520,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
             remainsteps.append(s)
             pipeline.append(steps[s])
 
-    print(f"==steps: {remainsteps}")
+    print(f"==remaining steps: {remainsteps}")
 
     jsonql.run_pipes(
         *pipeline,
