@@ -12,6 +12,7 @@ The pipeline parameters are described in the `Config` class.
 """
 import hashlib
 import json
+import random
 import time
 import traceback
 import warnings
@@ -413,14 +414,24 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     # Workaround DBFS super unstable /dbfs mnt issue.
     # check if the worknode can access the hashes, if not just skip
     # then we can keep minding shards instead of error out the whole cluster for single failure
-    if conf.execution == "spark":
-        try:
-            can_access = all(h.exists() for h in hashes)
-        except Exception as ex:
-            print(
-                f"==Failed to access hashes! error type:{type(ex).__name__}, details: {traceback.format_exc()}"
-            )
-            return "skipped"
+    if conf.execution == "spark" and conf.num_shards > 10:
+        retried = 0
+        while True:
+            try:
+                retried += 1
+                random_float = random.uniform(0.01, float(conf.num_shards) / 100.0)
+                print(
+                    f"==sleep for {random_float} seconds in _mine_shard, tried: {retried}"
+                )
+                time.sleep(random_float)
+                can_access = all(h.exists() for h in hashes)
+                break
+            except Exception as ex:
+                print(
+                    f"==Failed to access hashes! error type:{type(ex).__name__}, details: {traceback.format_exc()}"
+                )
+                if retried > 10:
+                    return "skipped as too many failures"
 
     print(f"==continue _mine_shard, with shard: {shard}, output: {output}")
     assert conf.pipeline
