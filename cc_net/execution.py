@@ -113,8 +113,8 @@ def map_spark_array(
     assert len(args) > 0, f"No arguments passed to {f_name}"
 
     rdd = sc.parallelize(newargs, task_parallelism)
-    rdd = rdd.map(lambda p: function(*p))
-    rdd.collect()
+    rdd = rdd.foreach(lambda p: function(*p))
+    # rdd.collect()
 
 
 def map_array_and_wait(
