@@ -1086,7 +1086,7 @@ class MultiFile(SimpleIO):
 _session = functools.lru_cache()(requests.Session)
 
 
-def request_get_content(url: str, n_retry: int = 3) -> bytes:
+def request_get_content(url: str, n_retry: int = 5) -> bytes:
     """Retrieve the binary content at url.
 
     Retry on connection errors.

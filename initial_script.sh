@@ -9,6 +9,11 @@ else
   mkdir /root/lm_sp
 fi
 
-cp -n /dbfs/data-mle/llm/cc_net/lm_sp/* /root/lm_sp/
+# cp -n /dbfs/data-mle/llm/cc_net/lm_sp/* /root/lm_sp/
+cp -n /dbfs/data-mle/llm/cc_net/lm_sp/en.arpa.bin /root/lm_sp/
+cp -n /dbfs/data-mle/llm/cc_net/lm_sp/en.sp.model /root/lm_sp/
+
+pip install /dbfs/data-mle/llm/cc_net/dist/cc_net-1.0.0-py3-none-any.whl
+pip install cc_net[getpy]
 
 echo "Done copy models"

@@ -215,7 +215,7 @@ REPRODUCE_CONFIG = Config(
 
 TEST_CONFIG = BASE_CONFIG._replace(
     config_name="test",
-    dump="2019-09",
+    dump="2020-10",
     output_dir=Path("test_data"),
     execution="spark",
     num_shards=3,
@@ -223,7 +223,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
     hash_in_mem=2,
     mine_num_processes=2,
     # lang_whitelist=["de", "it", "fr"],
-    lang_whitelist=["de"],
+    lang_whitelist=["en"],
     target_size="320M",
     cleanup_after_regroup=False,
     cache_dir=Path("test_data2_wet_cache"),
