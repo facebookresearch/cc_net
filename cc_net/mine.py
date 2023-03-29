@@ -14,6 +14,7 @@ import hashlib
 import json
 import time
 import warnings
+import traceback
 from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import repeat
@@ -101,8 +102,8 @@ class Config(NamedTuple):
     pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
-    dbfs_lm_dir: str = ""
-    dbfs_lm_id_path: str = ""
+    # dbfs_lm_dir: str = ""
+    # dbfs_lm_id_path: str = ""
 
     def get_executor(
         self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1
@@ -168,18 +169,18 @@ class Config(NamedTuple):
             return self.output_dir / f"{self.mined_dir}_split" / self.dump
         return self.output_dir / self.mined_dir / self.dump
 
-    def download_dbfs_file_to_local(self, source: Path, target: Path, overwrite: bool = False) -> bool:
-        if (not overwrite and target.exists()):
-            return True
+    # def download_dbfs_file_to_local(self, source: Path, target: Path, overwrite: bool = False) -> bool:
+    #     if (not overwrite and target.exists()):
+    #         return True
         
-        if (not source.startswith("/dbfs")):
-            print(f"==can not download file from dbfs to local as source path does not start from /dbfs: {str(source)}")
-            return False
+    #     if (not source.startswith("/dbfs")):
+    #         print(f"==can not download file from dbfs to local as source path does not start from /dbfs: {str(source)}")
+    #         return False
         
-        from databricks.sdk.runtime import dbutils
-        copied = dbutils.fs.cp(source.replace('/dbfs','dbfs:'), "file:" + str(target.absolute()))
-        print(f"==copied: {copied}, source: {str(source)}, target:{str(target)}")
-        return copied
+    #     from databricks.sdk.runtime import dbutils
+    #     copied = dbutils.fs.cp(source.replace('/dbfs','dbfs:'), "file:" + str(target.absolute()))
+    #     print(f"==copied: {copied}, source: {str(source)}, target:{str(target)}")
+    #     return copied
 
 
 BASE_CONFIG = Config()
@@ -221,9 +222,9 @@ TEST_CONFIG = BASE_CONFIG._replace(
     hash_in_mem=2,
     mine_num_processes=2,
     # lang_whitelist=["de", "it", "fr"],
-    lang_whitelist=["en"],
+    lang_whitelist=["de"],
     target_size="320M",
-    cleanup_after_regroup=True,
+    cleanup_after_regroup=False,
     cache_dir=Path("test_data2_wet_cache"),
     task_parallelism=4,
 )
@@ -400,6 +401,18 @@ def _get_segment(tmp_output: Path, doc: dict) -> str:
 
 
 def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> str:
+    print(f"==calling_mine_shard, with shard: {shard}, output: {output}, hashes: {hashes}")
+
+    # Workaround DBFS super unstable /dbfs mnt issue.
+    # check if the worknode can access the hashes, if not just skip 
+    # then we can keep minding shards instead of error out the whole cluster for single failure
+    if conf.execution == 'spark':
+        try:
+            can_access = all(h.exists() for h in hashes)
+        except Exception as ex:
+            print(f"==Failed to access hashes! error type:{type(ex).__name__}, details: {traceback.format_exc()}")
+            return "skipped"
+
     assert conf.pipeline
     tmp_output = tmp(output)
     if "hashes" in conf.experiments:
