@@ -56,7 +56,7 @@ def get_executor(
         execution_mode = "local"
 
     if execution_mode == "spark":
-        conf = SparkConf().setAppName(name)
+        conf = SparkConf().setAppName(name).set("spark.task.maxFailures", "10")
         # conf.set("spark.eventLog.enabled", "true") # Enable event logging
         # conf.set("spark.eventLog.dir", log_dir) # S
         sc = SparkContext.getOrCreate(conf)
