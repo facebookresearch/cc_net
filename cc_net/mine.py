@@ -215,7 +215,7 @@ REPRODUCE_CONFIG = Config(
 
 TEST_CONFIG = BASE_CONFIG._replace(
     config_name="test",
-    dump="2020-10",
+    dump="2023-06",
     output_dir=Path("test_data"),
     execution="spark",
     num_shards=3,
