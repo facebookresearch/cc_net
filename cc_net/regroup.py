@@ -105,7 +105,7 @@ def fast_reshard(
 
 
 def determine_groups(
-    inputs: List[Path], target_size: int = 4 * 1024 ** 3
+    inputs: List[Path], target_size: int = 4 * 1024**3
 ) -> List[List[Path]]:
     if len(inputs) == 0:
         return []

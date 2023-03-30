@@ -20,7 +20,8 @@ from bs4 import BeautifulSoup  # type: ignore
 
 from cc_net import jsonql
 
-WET_URL_ROOT = "https://commoncrawl.s3.amazonaws.com"
+# WET_URL_ROOT = "https://commoncrawl.s3.amazonaws.com"
+WET_URL_ROOT = "https://data.commoncrawl.org"
 
 
 logger = logging.getLogger(__name__)
@@ -63,9 +64,11 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
     WARC-Record-ID: <urn:uuid:8865156e-d5f1-4734-9c68-4b46eaf2bb7e>
     WARC-Refers-To: <urn:uuid:340152e2-65cf-4143-b522-8ce4e2d069d7>
     WARC-Block-Digest: sha1:S3DTWCONT2L6ORTGCY2KXEZ37LNBB7V2
+    WARC-Identified-Content-Language: rus  NOTE: this is newly added in late 2020
     Content-Type: text/plain
-    Content-Length: 7743
+    Content-Length: 6724
     """
+
     if not headers or not doc:
         return None
 
@@ -76,7 +79,7 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
         url = headers[2].split()[1]
         date = headers[3].split()[1]
         digest = headers[6].split()[1]
-        length = int(headers[8].split()[1])
+        length = int(headers[len(headers) - 2].split()[1])
     except Exception as e:
         logger.warning("Can't parse header:", e, headers, doc)
         return None
@@ -242,6 +245,7 @@ class CCShardReader(CCSegmentsReader):
             return self._segments
         segments = cc_segments(self.dump, self.cache_dir)
         n = len(segments)
+        print(f"==total segments: {n}, called from shard: {self.shard}")
         if self.num_shards < 0:
             self.num_shards = n // self.num_segments_per_shard
         i_min = (self.shard * n) // self.num_shards

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Sized
 
 import submitit
+from pyspark import SparkConf, SparkContext
 from typing_extensions import Protocol
 
 
@@ -47,10 +48,22 @@ def get_executor(
     options.update(
         {kv.split("=", 1)[0]: kv.split("=", 1)[1] for kv in execution.split(",")[1:]}
     )
-
+    print(
+        f"===get_executor name {name}, timeout_hour: {timeout_hour}, execution_mode: {execution_mode}, task_parallelism: {task_parallelism}"
+    )
     if execution_mode == "mp":
         warnings.warn("Execution mode 'mp' is deprecated, use 'local'.")
         execution_mode = "local"
+
+    if execution_mode == "spark":
+        conf = SparkConf().setAppName(name).set("spark.task.maxFailures", "10")
+        # conf.set("spark.eventLog.enabled", "true") # Enable event logging
+        # conf.set("spark.eventLog.dir", log_dir) # S
+        sc = SparkContext.getOrCreate(conf)
+        # We are on slurm
+        if task_parallelism == -1:
+            task_parallelism = 500
+        return functools.partial(map_spark_array, sc, task_parallelism)
 
     cluster = None if execution_mode == "auto" else execution_mode
     # use submitit to detect which executor is available
@@ -58,6 +71,7 @@ def get_executor(
 
     if ex.cluster == "local":
         # LocalExecutor doesn't respect task_parallelism
+        ex.update_parameters(name=name, timeout_min=int(timeout_hour * 60))
         return functools.partial(custom_map_array, ex, task_parallelism)
     if ex.cluster == "debug":
         return debug_executor
@@ -77,6 +91,32 @@ def get_executor(
     return functools.partial(map_array_and_wait, ex)
 
 
+def get_spark_executor(
+    name: str,
+):
+    sc = SparkContext.getOrCreate()
+    return sc
+
+
+def map_spark_array(
+    sc: SparkContext,
+    task_parallelism: int,
+    function: Callable[..., str],
+    *args: Iterable,
+):
+    f_name = function.__name__
+    print(f"==calling spark for func: {f_name}, with arg's len {len(args)}")
+
+    pfunc = lambda *p: p
+    newargs = list(map(pfunc, *args))
+
+    assert len(args) > 0, f"No arguments passed to {f_name}"
+
+    rdd = sc.parallelize(newargs, task_parallelism)
+    rdd = rdd.foreach(lambda p: function(*p))
+    # rdd.collect()
+
+
 def map_array_and_wait(
     ex: submitit.AutoExecutor, function: Callable[..., str], *args: Iterable
 ):
@@ -85,7 +125,9 @@ def map_array_and_wait(
     assert len(args) > 0, f"No arguments passed to {f_name}"
     approx_length = _approx_length(*args)
 
-    print(f"Submitting {f_name} in a job array ({approx_length} jobs)")
+    print(
+        f"map_array_and_wait Submitting {f_name} in a job array ({approx_length} jobs)"
+    )
     jobs = ex.map_array(function, *args)
     if not jobs:
         return
@@ -157,7 +199,9 @@ def custom_map_array(
     if parallelism < 0:
         parallelism = os.cpu_count() or 0
     assert parallelism >= 0, f"Can't run any jobs with task_parallelism={parallelism}"
-    print(f"Submitting {total} jobs for {f_name}, with task_parallelism={parallelism}")
+    print(
+        f"custom_map_array Submitting {total} jobs for {f_name}, with task_parallelism={parallelism}"
+    )
     enqueued = 0
     done = 0
     running_jobs: List[submitit.Job] = []

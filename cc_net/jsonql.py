@@ -42,6 +42,7 @@ from typing import (
     Union,
 )
 
+import dill
 import numpy as np
 import psutil  # type: ignore
 import requests
@@ -409,6 +410,8 @@ def run_pipes(
     if expect_json and inputs is None:
         fns = (JsonReader(),) + fns
     transformers = []
+    print(f"==get fns in run_pipes {fns}, count {len(fns)}")
+
     for t in fns:
         if not isinstance(t, Transformer):
             break
@@ -435,18 +438,19 @@ def run_pipes(
             else:
                 p = multiprocessing.current_process()
                 log(f"Will start {processes} processes from {p.name}, Pid: {p.pid}")
-                pool = stack.enter_context(
-                    multiprocessing.Pool(
-                        processes=processes,
-                        initializer=_set_global_transformer,
-                        initargs=(transform,),
-                    )
+                cp = multiprocessing.Pool(
+                    processes=processes,
+                    initializer=_set_global_transformer,
+                    initargs=(transform,),
                 )
+                log("done with muti pool")
+                pool = stack.enter_context(cp)
                 data = pool.imap_unordered(
                     _global_transformer, data, chunksize=chunksize
                 )
 
         for fn in pipes:
+            print(f"==now handling: {fn}")
             if isinstance(fn, Transformer):
                 data = fn.map(data)
             else:
@@ -638,7 +642,7 @@ class where(Transformer):
 
     def do(self, doc: dict) -> Optional[dict]:
         assert self.clauses
-        if not doc or not all((c(doc) for c in self.clauses)):
+        if not doc or not all((dill.loads(c)(doc) for c in self.clauses)):
             return None
         self.n_selected += 1
         return doc
@@ -1019,7 +1023,7 @@ def open_write(
 
 
 def parse_size(size):
-    unit_map = {"B": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+    unit_map = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
     unit = size[-1].upper()
     assert (
         unit in unit_map
@@ -1082,7 +1086,7 @@ class MultiFile(SimpleIO):
 _session = functools.lru_cache()(requests.Session)
 
 
-def request_get_content(url: str, n_retry: int = 3) -> bytes:
+def request_get_content(url: str, n_retry: int = 5) -> bytes:
     """Retrieve the binary content at url.
 
     Retry on connection errors.
@@ -1102,7 +1106,7 @@ def request_get_content(url: str, n_retry: int = 3) -> bytes:
             warnings.warn(
                 f"Swallowed error {e} while downloading {url} ({i} out of {n_retry})"
             )
-            time.sleep(10 * 2 ** i)
+            time.sleep(10 * 2**i)
     dl_time = time.time() - t0
     dl_speed = len(r.content) / dl_time / 1024
     logging.info(
@@ -1115,7 +1119,11 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     """Download the files at the given url to memory and opens it as a file.
     Assumes that the file is small, and fetch it when this function is called.
     """
-    if cache and cache.exists():
+    valid_cache = False
+    if cache and cache.exists() and os.path.getsize(cache) > 1:
+        valid_cache = True
+
+    if cache and valid_cache:
         return open_read(cache)
 
     # TODO: open the remote file in streaming mode.
@@ -1128,11 +1136,11 @@ def open_remote_file(url: str, cache: Path = None) -> Iterable[str]:
     else:
         f = io.TextIOWrapper(content)
 
-    if cache and not cache.exists():
+    if cache and not valid_cache:
         # The file might have been created while downloading/writing.
         tmp_cache = _tmp(cache)
         tmp_cache.write_bytes(raw_bytes)
-        if not cache.exists():
+        if not valid_cache:
             tmp_cache.replace(cache)
         else:
             tmp_cache.unlink()
@@ -1148,7 +1156,7 @@ def sharded_file(file_pattern: Path, mode: str, max_size: str = "4G") -> MultiFi
     assert 0 < n < 8
     assert "?" * n in name, f"The '?' need to be adjacents in {file_pattern}"
     assert "r" not in mode
-    files = (folder / name.replace("?" * n, f"%0{n}d" % i) for i in range(10 ** n))
+    files = (folder / name.replace("?" * n, f"%0{n}d" % i) for i in range(10**n))
 
     return MultiFile(files, mode, max_size)
 

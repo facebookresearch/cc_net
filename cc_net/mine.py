@@ -10,10 +10,11 @@ filter the documents.
 
 The pipeline parameters are described in the `Config` class.
 """
-
 import hashlib
 import json
+import random
 import time
+import traceback
 import warnings
 from argparse import ArgumentParser
 from collections import defaultdict
@@ -21,6 +22,7 @@ from itertools import repeat
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
+import dill
 import func_argparse
 
 # Local scripts
@@ -32,8 +34,10 @@ from cc_net.execution import Executor
 # Constant
 FILE_DIR = Path(__file__).parent
 CUTOFF_CSV = FILE_DIR / "data" / "cutoff.csv"
+LID_BIN = FILE_DIR / "bin" / "lid.bin"
 
 DEFAULT_PIPELINE = [
+    "hash",
     "dedup",
     "lid",
     "keep_lang",
@@ -57,12 +61,13 @@ class Config(NamedTuple):
     num_shards: number of shards to split the dump
     num_segments_per_shard: allow to download a small portion of CC (eg for tests)
     min_len: remove documents shorter than this (in chars)
-    hashes_in_mem: number of shards hashes to use for dedup
+    hash_in_mem: number of shards hashes to use for dedup
     lang_whitelist: only treat those languages
     lang_blacklist: ignore those languages
     lang_threshold: remove docs whose top language score is lower than this
     keep_bucket: keep only those perplexity bucket chose from (head, middle, tail, all)
     lm_dir: folder containing LMs
+    lm_id_path: path for the language identity bin
     lm_languages: only use LMs for the following languages
     cutoff: cutoff file to use for split in head/middle/tail
     mine_num_processes: number of processes to use for mining
@@ -88,6 +93,7 @@ class Config(NamedTuple):
     lang_threshold: float = 0.5
     keep_bucket: Sequence[str] = []
     lm_dir: Path = Path("data/lm_sp")
+    lm_id_path: Path = LID_BIN
     cutoff: Path = CUTOFF_CSV
     lm_languages: Optional[Sequence[str]] = None
     mine_num_processes: int = 16
@@ -97,14 +103,18 @@ class Config(NamedTuple):
     pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
+    # dbfs_lm_dir: str = ""
+    # dbfs_lm_id_path: str = ""
 
     def get_executor(
         self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1
     ) -> Executor:
         name = "_".join((name, self.config_name, *self.experiments))
+        log_dir = self.output_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
         return execution.get_executor(
             name,
-            self.output_dir / "logs",
+            log_dir,
             self.execution,
             timeout_hour=timeout_hour,
             mem_gb=mem_gb,
@@ -160,6 +170,19 @@ class Config(NamedTuple):
             return self.output_dir / f"{self.mined_dir}_split" / self.dump
         return self.output_dir / self.mined_dir / self.dump
 
+    # def download_dbfs_file_to_local(self, source: Path, target: Path, overwrite: bool = False) -> bool:
+    #     if (not overwrite and target.exists()):
+    #         return True
+
+    #     if (not source.startswith("/dbfs")):
+    #         print(f"==can not download file from dbfs to local as source path does not start from /dbfs: {str(source)}")
+    #         return False
+
+    #     from databricks.sdk.runtime import dbutils
+    #     copied = dbutils.fs.cp(source.replace('/dbfs','dbfs:'), "file:" + str(target.absolute()))
+    #     print(f"==copied: {copied}, source: {str(source)}, target:{str(target)}")
+    #     return copied
+
 
 BASE_CONFIG = Config()
 
@@ -192,25 +215,52 @@ REPRODUCE_CONFIG = Config(
 
 TEST_CONFIG = BASE_CONFIG._replace(
     config_name="test",
-    dump="2019-09",
+    dump="2023-06",
     output_dir=Path("test_data"),
-    execution="local",
-    num_shards=4,
+    execution="spark",
+    num_shards=3,
     num_segments_per_shard=1,
     hash_in_mem=2,
     mine_num_processes=2,
-    lang_whitelist=["de", "it", "fr"],
-    target_size="32M",
+    # lang_whitelist=["de", "it", "fr"],
+    lang_whitelist=["en"],
+    target_size="320M",
+    cleanup_after_regroup=False,
+    cache_dir=Path("test_data2_wet_cache"),
+    task_parallelism=4,
+)
+
+DBFS_ROOT_PATH = "/dbfs/tmp/cc_net/"
+
+TEST_SPARK_CONFIG = BASE_CONFIG._replace(
+    config_name="test_spark",
+    dump="2019-09",
+    output_dir=Path(DBFS_ROOT_PATH + "test_data"),
+    mined_dir=DBFS_ROOT_PATH + "test_data/mined",
+    execution="spark",
+    num_shards=3,
+    num_segments_per_shard=1,
+    hash_in_mem=2,
+    mine_num_processes=2,
+    lang_whitelist=["en"],
+    target_size="320M",
     cleanup_after_regroup=False,
     cache_dir=Path("test_data/wet_cache"),
+    task_parallelism=4,
 )
 
 PREDEF_CONFIGS = {
     "base": BASE_CONFIG,
     "by_lang": BYLANG_CONFIG,
     "test": TEST_CONFIG,
+    "test_spark": TEST_SPARK_CONFIG,
     "test_slurm": TEST_CONFIG._replace(execution="slurm,partition=dev"),
-    "debug": TEST_CONFIG._replace(config_name="debug", mine_num_processes=0),
+    "debug": TEST_CONFIG._replace(
+        config_name="debug",
+        mine_num_processes=0,
+        execution="local",
+        task_parallelism=-1,
+    ),
     "reproduce": REPRODUCE_CONFIG,
     "augment": BASE_CONFIG._replace(
         config_name="augment", dump="2019-13", lang_blacklist=["en"]
@@ -259,7 +309,11 @@ def hashes(conf: Config) -> List[Path]:
     hashes_dir.mkdir(parents=True, exist_ok=True)
     # With FlatHashSet we need ~2Gb of RAM / shard, but we need to account for
     # overhead due to how the dynamic allocation works.
+    # print(f"==missing_outputs num {missing_outputs}, transpose out: {_transpose(missing_outputs)}")
     ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2)
+    print(
+        f"==calling _hashes_shard to continue with {len(missing_outputs)} missing output"
+    )
     ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
 
     # Wait a bit so that files appears on the disk.
@@ -270,6 +324,7 @@ def hashes(conf: Config) -> List[Path]:
 
 def _hashes_shard(conf: Config, shard: int, output: Path):
     tmp_output = tmp(output)
+    print(f"==running hash shard: {shard}, output: {output}, tmp {tmp_output}")
     jsonql.run_pipes(
         dedup.HashesCollector(field="raw_content", output=tmp_output),
         inputs=conf.get_cc_shard(shard),
@@ -321,16 +376,8 @@ def mine(conf: Config) -> List[Path]:
     if not missing_outputs:
         return outputs
 
-    mined_dir.mkdir(parents=True, exist_ok=True)
-    ex = conf.get_executor(
-        f"mine_{conf.dump}",
-        mem_gb=mem_gb,
-        timeout_hour=timeout_hour,
-        cpus=conf.mine_num_processes + 1,
-    )
-
     # Compute hashes firsts.
-    if "dedup" in conf.pipeline:
+    if "hash" in conf.pipeline:
         hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
         hashes_files: Iterable[List[Path]] = [
             hashes_groups[shard // conf.hash_in_mem] for shard, o in missing_outputs
@@ -338,6 +385,16 @@ def mine(conf: Config) -> List[Path]:
     else:
         hashes_files = repeat([])
 
+    mined_dir.mkdir(parents=True, exist_ok=True)
+    ex = conf.get_executor(
+        f"mine_shard_{conf.dump}",
+        mem_gb=mem_gb,
+        timeout_hour=timeout_hour,
+        cpus=conf.mine_num_processes + 1,
+    )
+    print(
+        f"==calling _mine_shard to continue with {len(missing_outputs)} missing output"
+    )
     ex(_mine_shard, repeat(conf), hashes_files, *_transpose(missing_outputs))
 
     assert all(o.exists() for o in outputs)
@@ -350,6 +407,33 @@ def _get_segment(tmp_output: Path, doc: dict) -> str:
 
 
 def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> str:
+    print(
+        f"==calling_mine_shard, with shard: {shard}, output: {output}, hashes: {hashes}"
+    )
+
+    # Workaround DBFS super unstable /dbfs mnt issue.
+    # check if the worknode can access the hashes, if not just skip
+    # then we can keep minding shards instead of error out the whole cluster for single failure
+    if conf.execution == "spark" and conf.num_shards > 10:
+        retried = 0
+        while True:
+            try:
+                retried += 1
+                random_float = random.uniform(0.01, float(conf.num_shards) / 100.0)
+                print(
+                    f"==sleep for {random_float} seconds in _mine_shard, tried: {retried}"
+                )
+                time.sleep(random_float)
+                can_access = all(h.exists() for h in hashes)
+                break
+            except Exception as ex:
+                print(
+                    f"==Failed to access hashes! error type:{type(ex).__name__}, details: {traceback.format_exc()}"
+                )
+                if retried > 10:
+                    return "skipped as too many failures"
+
+    print(f"==continue _mine_shard, with shard: {shard}, output: {output}")
     assert conf.pipeline
     tmp_output = tmp(output)
     if "hashes" in conf.experiments:
@@ -357,10 +441,20 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         hashes_in_mem = shard
         hashes = hashes[: HASHES_IN_MEM[hashes_in_mem]]
         shard = 0
+
+    # ensure all needed model is ready locally:
+    # if (conf.execution == 'spark'):
+    #     if (conf.dbfs_lm_id_path.startswith('/dbfs')):
+    #         conf.download_dbfs_file_to_local(conf.dbfs_lm_id_path, conf.lm_id_path)
+    #     if (conf.dbfs_lm_dir.startswith('/dbfs')):
+    #         for l in conf.get_lm_languages():
+    #             conf.download_dbfs_file_to_local(conf.dbfs_lm_dir / f"{l}.sp.model", conf.lm_dir / f"{l}.sp.model")
+    #             conf.download_dbfs_file_to_local(conf.dbfs_lm_dir / f"{l}.arpa.bin", conf.lm_dir / f"{l}.arpa.bin")
+
     cc_shard = conf.get_cc_shard(shard)
 
     steps: Dict[str, Optional[jsonql.Transformer]] = {}
-    lang_id = Path("bin") / "lid.bin"
+    lang_id = conf.lm_id_path
     steps["lid_before_dedup"] = split_by_lang.Classifier(
         model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
     )
@@ -379,11 +473,15 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
 
     if conf.lang_blacklist:
         steps["keep_lang"] = jsonql.where(
-            [lambda doc: doc.get("language") not in set(conf.lang_blacklist)]
+            [
+                dill.dumps(
+                    lambda doc: doc.get("language") not in set(conf.lang_blacklist)
+                )
+            ]
         )
     elif conf.lang_whitelist:
         steps["keep_lang"] = jsonql.where(
-            [lambda doc: doc.get("language") in set(conf.lang_whitelist)]
+            [dill.dumps(lambda doc: doc.get("language") in set(conf.lang_whitelist))]
         )
     else:
         steps["keep_lang"] = None
@@ -427,7 +525,15 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         split_fn=lambda doc: _get_segment(tmp_output, doc), mkdir=True
     )
 
-    pipeline = filter(None, (steps[s] for s in conf.pipeline))
+    remainsteps = []
+    pipeline = []
+
+    for s in conf.pipeline:
+        if s in steps.keys():
+            remainsteps.append(s)
+            pipeline.append(steps[s])
+
+    print(f"==remaining steps: {remainsteps}")
 
     jsonql.run_pipes(
         *pipeline,
@@ -642,6 +748,8 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
 
     if conf.config_name == "test":
         _validate_test(conf, conf.get_mined_dir(regroup=True))
+
+    print("==Completed all pipelines!")
 
 
 if __name__ == "__main__":

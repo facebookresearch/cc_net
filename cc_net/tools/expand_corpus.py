@@ -26,7 +26,7 @@ from cc_net import dedup, jsonql, perplexity, text_normalizer
 
 KENLM = Path("./bin/lmplz")
 KENLM_BUILD = Path("./bin/build_binary")
-VOCAB_SIZE = 2 ** 16 - 10
+VOCAB_SIZE = 2**16 - 10
 PROCESSES = 16
 
 
