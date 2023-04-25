@@ -217,12 +217,15 @@ def find_in_snapshot(
             # Since websites are sorted we can exit
             break
 
-        doc = Document.from_json(json.loads(idx_entry.data))
-        if "/warc/CC-MAIN-" not in doc.segment:
+        json_doc = json.loads(idx_entry.data)
+        if "filename" not in json_doc and "/warc/CC-MAIN-" not in json_doc["filename"]:
             # We don't want to read the crawldiagnostics and robottxt files
             continue
-        docs.append(doc)
-
+        try:
+            docs.append(Document.from_json(json_doc))
+        except KeyError:
+            # Skip non-document in the index
+            continue
     return docs
 
 
@@ -390,10 +393,10 @@ def extract_lett(warc_file: Path, fasttext_model: Path, outfile: Path) -> dict:
     cmd = [
         # Note: this works because I'm using the gwenzek fork of warc2text that produces lett files
         CIRRUS / "bin" / "warc2text",
-        "--tag-filters",
-        CIRRUS / "mt-filter-list.annotated",
-        "--url-filters",
-        CIRRUS / "url-filter-list.optimised",
+        # "--tag-filters",
+        # CIRRUS / "mt-filter-list.annotated",
+        # "--url-filters",
+        # CIRRUS / "url-filter-list.optimised",
         "--langid-model",
         fasttext_model,
         "--output",

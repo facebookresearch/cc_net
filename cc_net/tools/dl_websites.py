@@ -71,16 +71,33 @@ def dl(
     ex(cc_net.websites.dl_batch, sites, outdirs)
 
 
-# Done: tir
-# In progress: asm,kac,kmb,lin
-# In porgress: luo,orm,sin,wol,dyu,kea,kon,mri,que
-#
+def one(
+    website: str,
+    outdir: Path = WARC,
+    execution: str = "slurm,slurm_partition=learnaccel",
+    fasttext: Path = FASTTEXT_MODEL,
+    ratio: float = 0.05,
+):
+    ex = cc_net.execution.get_executor(
+        "dl_websites",
+        WARC / "logs",
+        execution,
+        timeout_hour=3 * 24,
+        task_parallelism=515,
+    )
+    lett_file = LETT / (website + ".gz")
+    warc_file = outdir / (website + ".gz")
+    seq = submitit.helpers.FunctionSequence()
+    seq.add(cc_net.websites.dl_from_cc, website, warc_file)
+    seq.add(cc_net.websites.extract_lett, warc_file, fasttext, lett_file)
+    ex(submitit.helpers.FunctionSequence.__call__, [seq])
+
 def lett(
     langs: str = "tir",
     warc: Path = WARC,
     lett: Path = LETT,
     fasttext: Path = FASTTEXT_MODEL,
-    execution: str = "slurm,slurm_partition=learnaccel",
+    execution: str = "local",
 ):
     _langs = langs.split(",")
 
@@ -105,15 +122,6 @@ def lett(
             lett_file = lett / lang / lett_file_name
             if lett_file.exists():
                 continue
-            #     n_files += 1
-            #     file_stats = cc_net.websites.lett_file_stats(lett_file)
-            #     if all(len(k) > 2 for k in file_stats):
-            #         for k, v in file_stats.items():
-            #             stats[k] += v
-            #         continue
-            #     else:
-            #         # redo the file since it has old language codes
-            #         pass
             tasks.append((file, fasttext, lett_file))
 
     print(f"Stats on {n_files} files: {stats}")
@@ -126,7 +134,6 @@ def lett(
         batches[-1].add(cc_net.websites.extract_lett, *task)
 
     print(f"Grouped {len(tasks)} in {len(batches)} groups")
-    breakpoint()
 
     ex = cc_net.execution.get_executor(
         "dl_websites",
@@ -154,4 +161,4 @@ def lett(
 if __name__ == "__main__":
     import func_argparse
 
-    func_argparse.main(dl, lett)
+    func_argparse.main(dl, lett, one)
